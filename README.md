@@ -6,6 +6,16 @@ Live battery dashboard for the **MG Windsor EV (52.9 kWh)** over an ELM327 OBD-I
 - **Phone:** SoC, range, energy left, power (drive / regen / charge), pack V & A, trip efficiency, charging session, SoH, pack temperature, highest/lowest cell (with cell number) and spread, 12 V battery, odometer.
 - **Android Auto:** Live (SoC + range, power, trip, charging, battery), Charging (kW, kWh added, time to 80/90/100 %), Trip (Wh/km, kWh/100 km, regen, range).
 
+## Measured vs estimated
+Every battery and cell figure is the BMS's own reading, shown as reported. Nothing is interpolated, and no per-cell voltages are made up. Only **range** and **charge time** are estimates, and both are labelled *est.*
+
+## Local logs (no cloud)
+The app makes no network calls except to a Wi-Fi OBD dongle. It has no analytics or Firebase, and its data is excluded from Android backup. Logs are kept on the phone in app storage:
+- `samples-YYYY-MM-DD.csv`: one row per reading (SoC, SoH, energy left, V, A, kW, max/min cell mV with cell numbers, spread, pack temp, 12 V, odometer). A blank cell means it wasn't read.
+- `events.csv`: connects and disconnects, charge sessions (SoC from → to, kWh added, peak kW, minutes) and trip resets.
+
+From the Logs panel: **Save to Downloads** (copies to `Download/WindsorDash`), **Share**, **Delete**, or switch logging off. Demo mode is never logged.
+
 ## Adapters
 Bluetooth LE (Vgate iCar Pro BLE, Veepeak BLE, OBDLink CX, vLinker BLE…), classic Bluetooth (pair it in Android settings first) and Wi-Fi (192.168.0.10:35000). There's also a **Demo** adapter that simulates the car, so you can try the Android Auto screens without the car.
 

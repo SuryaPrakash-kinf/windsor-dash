@@ -81,6 +81,7 @@ object Dash {
     fun init(ctx: Context) {
         if (::prefs.isInitialized) return
         prefs = ctx.applicationContext.getSharedPreferences("dash", Context.MODE_PRIVATE)
+        LocalLog.init(ctx.applicationContext)
         _state.update {
             it.copy(
                 adapter = AdapterRef.decode(prefs.getString("adapter", null)),
@@ -101,11 +102,30 @@ object Dash {
         _state.update { it.copy(targetSoc = pct) }
     }
 
-    fun setStatus(s: LinkStatus, text: String) = _state.update { it.copy(status = s, statusText = text) }
-
-    fun resetTrip() = _state.update {
-        it.copy(trip = Trip(System.currentTimeMillis(), it.sample.odometerKm))
+    fun setStatus(s: LinkStatus, text: String) {
+        val before = _state.value.status
+        _state.update { it.copy(status = s, statusText = text) }
+        if (s != before || s == LinkStatus.RETRYING) LocalLog.event("${s.name.lowercase()}: $text")
     }
+
+    fun resetTrip() {
+        val t = _state.value.trip
+        if (t != null) logTrip(t, "trip reset")
+        _state.update { it.copy(trip = Trip(System.currentTimeMillis(), it.sample.odometerKm)) }
+    }
+
+    private fun logTrip(t: Trip, why: String) = LocalLog.event(
+        "$why: %d km, %.2f kWh used, %.2f kWh regen, %s Wh/km".format(
+            t.km, t.netWh / 1000, t.regenWh / 1000, t.whPerKm?.let { "%.0f".format(it) } ?: "n/a"
+        )
+    )
+
+    private fun logCharge(c: ChargeSession, why: String) = LocalLog.event(
+        "$why: SoC %s -> %s, %.2f kWh added, peak %.1f kW, %d min".format(
+            c.startSoc?.toInt() ?: "?", c.endSoc?.toInt() ?: "?", c.addedKwh, c.peakKw,
+            ((c.endedAt ?: System.currentTimeMillis()) - c.startedAt) / 60_000
+        )
+    )
 
     /** Lifetime average used for range when the current trip is too short. */
     private fun lifetimeWhKm(): Double? {
@@ -181,13 +201,25 @@ object Dash {
             sample = s, powerKw = kw, charging = charging, trip = trip, charge = charge,
             rangeKm = range, effWhKm = eff, effSource = src,
         )
+
+        if (prev.status != LinkStatus.DEMO) {
+            LocalLog.sample(s, prev.status, kw)
+            if (charge != null && charge.active && (old == null || !old.active)) LocalLog.event("charging started at ${s.socPct?.toInt() ?: "?"}%")
+            if (charge != null && !charge.active && old != null && old.active) logCharge(charge, "charging ended")
+        }
     }
 
     fun onDisconnected() {
         lastAt = 0; negSince = 0; posSince = 0
+        val st0 = _state.value
+        val c0 = st0.charge
+        if (st0.status != LinkStatus.DEMO && c0 != null && c0.active) {
+            logCharge(c0.copy(endedAt = System.currentTimeMillis(), endSoc = st0.sample.socPct), "charging ended (link lost)")
+        }
         _state.update { st ->
             val c = st.charge
             st.copy(charge = if (c != null && c.active) c.copy(endedAt = System.currentTimeMillis()) else c, charging = false)
         }
+        LocalLog.flush()
     }
 }

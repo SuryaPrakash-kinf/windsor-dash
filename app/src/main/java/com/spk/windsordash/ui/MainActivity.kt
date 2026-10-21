@@ -31,6 +31,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Switch
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +42,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,6 +51,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import android.widget.Toast
+import androidx.core.content.FileProvider
+import com.spk.windsordash.data.LocalLog
+import kotlinx.coroutines.delay
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -159,7 +168,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
                 Spacer(Modifier.weight(1f))
                 Column(horizontalAlignment = Alignment.End) {
                     Text(st.rangeKm?.let { "$it km" } ?: "– km", fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = Teal)
-                    Text("range at ${st.effWhKm?.roundToInt() ?: "–"} Wh/km (${st.effSource})", fontSize = 11.sp, color = Dim)
+                    Text("est. range at ${st.effWhKm?.roundToInt() ?: "–"} Wh/km (${st.effSource})", fontSize = 11.sp, color = Dim)
                 }
             }
             LinearProgressIndicator(
@@ -214,7 +223,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
                         for (t in listOf(80, 90, 100)) FilterChip(
                             selected = st.targetSoc == t, onClick = { Dash.setTarget(t) }, label = { Text("$t%") })
                         Spacer(Modifier.weight(1f))
-                        Text(st.minutesToTarget?.let { minutes(it.toLong()) } ?: "–", color = Teal, fontWeight = FontWeight.SemiBold)
+                        Text(st.minutesToTarget?.let { "est. " + minutes(it.toLong()) } ?: "–", color = Teal, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -255,12 +264,84 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             }
         }
 
+        LogsPanel()
+
+        Text(
+            "All battery and cell figures are the BMS's own readings, shown as reported — nothing is " +
+                "interpolated or guessed. Only range and charge time are estimates (marked est.).",
+            color = Dim, fontSize = 12.sp
+        )
         Text(
             "Android Auto: open the Windsor Dash tile in the car's app launcher. Sideloaded apps need " +
                 "Android Auto → Settings → tap Version 10× → ⋮ Developer settings → Unknown sources.",
             color = Dim, fontSize = 12.sp
         )
     }
+}
+
+@Composable
+private fun LogsPanel() {
+    val ctx = LocalContext.current
+    var on by remember { mutableStateOf(LocalLog.enabled) }
+    var bytes by remember { mutableLongStateOf(LocalLog.totalBytes()) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { while (true) { bytes = LocalLog.totalBytes(); delay(5000) } }
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Local logs", color = Color.White, fontWeight = FontWeight.Medium)
+                Text(
+                    "${LocalLog.files().size} files · ${"%.1f".format(bytes / 1024.0)} KB · kept on this phone only",
+                    color = Dim, fontSize = 12.sp
+                )
+            }
+            Switch(checked = on, onCheckedChange = { on = it; LocalLog.setEnabled(ctx, it) })
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                val n = runCatching { LocalLog.saveToDownloads(ctx) }.getOrDefault(0)
+                val msg = when {
+                    n < 0 -> "Needs Android 10+ — use Share instead"
+                    n == 0 -> "No logs yet"
+                    else -> "Saved $n files to Downloads/WindsorDash"
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            }) { Text("Save to Downloads") }
+            OutlinedButton(onClick = {
+                LocalLog.flush()
+                val files = LocalLog.files()
+                if (files.isEmpty()) {
+                    Toast.makeText(ctx, "No logs yet", Toast.LENGTH_SHORT).show()
+                } else {
+                    val uris = ArrayList(files.map { FileProvider.getUriForFile(ctx, ctx.packageName + ".logs", it) })
+                    val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                        type = "text/csv"
+                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    ctx.startActivity(Intent.createChooser(send, "Share logs"))
+                }
+            }) { Text("Share") }
+            TextButton(onClick = { confirmDelete = true }) { Text("Delete", color = Red) }
+        }
+        Text(
+            "samples-<date>.csv: one row per reading · events.csv: connects, trips, charge sessions",
+            color = Dim, fontSize = 11.sp
+        )
+    }
+    if (confirmDelete) AlertDialog(
+        onDismissRequest = { confirmDelete = false },
+        containerColor = Card,
+        title = { Text("Delete all logs?") },
+        text = { Text("Copies already saved to Downloads are not touched.") },
+        confirmButton = {
+            TextButton(onClick = {
+                LocalLog.deleteAll(); bytes = 0; confirmDelete = false
+            }) { Text("Delete", color = Red) }
+        },
+        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+    )
 }
 
 private fun minutes(m: Long): String = if (m >= 60) "${m / 60} h ${m % 60} min" else "$m min"

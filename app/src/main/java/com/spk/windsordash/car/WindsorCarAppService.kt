@@ -136,7 +136,7 @@ class LiveScreen(ctx: CarContext) : DashScreen(ctx) {
         val powerText: CharSequence = if (p != null && p < -0.2) colored(va, CarColor.GREEN) else va
         val rows = mutableListOf(
             row(
-                "${pct(s.socPct)}  ·  ${st.rangeKm?.let { "$it km" } ?: "–"} range",
+                "${pct(s.socPct)}  ·  ${st.rangeKm?.let { "$it km" } ?: "–"} range (est.)",
                 s.energyLeftKwh?.let { "%.1f kWh left · at %d Wh/km (%s)".format(it, st.effWhKm?.roundToInt() ?: 0, st.effSource) },
             ),
             row(powerTitle, powerText),
@@ -150,7 +150,7 @@ class LiveScreen(ctx: CarContext) : DashScreen(ctx) {
             if (st.charging) "Charging session" else "Last charge",
             colored(
                 (c?.let { "+%.1f kWh · peak %.0f kW".format(it.addedKwh, it.peakKw) } ?: "") +
-                    (st.minutesToTarget?.let { " · ${mins(it.toLong())} to ${st.targetSoc}%" } ?: ""),
+                    (st.minutesToTarget?.let { " · est. ${mins(it.toLong())} to ${st.targetSoc}%" } ?: ""),
                 if (st.charging) CarColor.GREEN else CarColor.DEFAULT,
             ),
         ) { screenManager.push(ChargingScreen(carContext)) }
@@ -180,7 +180,7 @@ class ChargingScreen(ctx: CarContext) : DashScreen(ctx) {
             ),
             row("${pct(c.startSoc)} → ${pct(c.endSoc ?: s.socPct)}", "%.2f kWh added in %s".format(c.addedKwh, mins(elapsed))),
             row(
-                "Time to ${st.targetSoc}%: " + (st.minutesToTarget?.let { mins(it.toLong()) } ?: if (c.active) "–" else "done"),
+                "Est. time to ${st.targetSoc}%: " + (st.minutesToTarget?.let { mins(it.toLong()) } ?: if (c.active) "–" else "done"),
                 "Estimate slows above 90% (LFP taper)",
             ),
             row("Pack ${s.battTempC?.let { "$it °C" } ?: "–"}", st.cellDeltaMv?.let { "Cell spread $it mV" }),
@@ -202,7 +202,7 @@ class TripScreen(ctx: CarContext) : DashScreen(ctx) {
                 t.kwhPer100?.let { "%.1f kWh/100 km".format(it) }),
             row("${t.km} km in ${mins(elapsed)}", "Distance from the odometer (1 km steps)"),
             row("%.2f kWh used".format(t.netWh / 1000), "%.2f kWh recovered by regen".format(t.regenWh / 1000)),
-            row("Range now ${st.rangeKm?.let { "$it km" } ?: "–"}", "Based on ${st.effSource} (${st.effWhKm?.roundToInt() ?: "–"} Wh/km)"),
+            row("Est. range ${st.rangeKm?.let { "$it km" } ?: "–"}", "Based on ${st.effSource} (${st.effWhKm?.roundToInt() ?: "–"} Wh/km)"),
         )
         return list("Trip", rows, strip, back = true)
     }
