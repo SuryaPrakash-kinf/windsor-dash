@@ -20,6 +20,7 @@ import com.spk.windsordash.data.LinkStatus
 import com.spk.windsordash.obd.AdapterRef
 import com.spk.windsordash.obd.Elm327
 import com.spk.windsordash.obd.ObdTransport
+import com.spk.windsordash.obd.OdoFinder
 import com.spk.windsordash.obd.WindsorProfile
 import com.spk.windsordash.obd.openTransport
 import com.spk.windsordash.ui.MainActivity
@@ -42,6 +43,7 @@ class LinkService : Service() {
     private var notifJob: Job? = null
     private var transport: ObdTransport? = null
     private var wake: PowerManager.WakeLock? = null
+    private lateinit var gps: GpsDistance
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,6 +51,7 @@ class LinkService : Service() {
         super.onCreate()
         Dash.init(this)
         createChannel()
+        gps = GpsDistance(this) { m -> Dash.onGpsMeters(m) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -62,8 +65,15 @@ class LinkService : Service() {
         if (ref == null) {
             stopSelf(); return START_NOT_STICKY
         }
-        val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
-        ServiceCompat.startForeground(this, NOTIF_ID, buildNotification("Connecting to ${ref.name}…"), type)
+        val base = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
+        val withGps = if (Build.VERSION.SDK_INT >= 29 && gps.hasPermission()) base or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else base
+        val n = buildNotification("Connecting to ${ref.name}…")
+        try {
+            ServiceCompat.startForeground(this, NOTIF_ID, n, withGps)
+        } catch (e: Exception) {
+            // Location type refused (e.g. started from the car screen in the background): run without GPS.
+            ServiceCompat.startForeground(this, NOTIF_ID, n, base)
+        }
         startLink(ref)
         return START_STICKY
     }
@@ -92,11 +102,21 @@ class LinkService : Service() {
                         if (!WindsorProfile.probe(elm)) error("No reply from the Windsor BMS — is the car switched on?")
                         attempt = 0
                         Dash.setStatus(LinkStatus.LIVE, "Live · ${ref.name}")
-                        WindsorProfile.poll(elm) { Dash.onSample(it) }
+                        startGps()
+                        WindsorProfile.poll(
+                            elm,
+                            odoSpec = { Dash.state.value.odoSpec },
+                            between = {
+                                val found = OdoFinder.runIfPending(elm)
+                                if (found != null && found.confident) Dash.saveOdoSpec(found.spec)
+                            },
+                        ) { Dash.onSample(it) }
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    stopGps()
+                    if (OdoFinder.state.value.running) OdoFinder.cancel()
                     Dash.onDisconnected()
                     attempt++
                     val wait = minOf(30_000L, 3_000L * attempt)
@@ -124,7 +144,16 @@ class LinkService : Service() {
         }
     }
 
+    private fun startGps() = scope.launch(Dispatchers.Main) {
+        Dash.setGpsOn(gps.start())
+    }
+
+    private fun stopGps() = scope.launch(Dispatchers.Main) {
+        gps.stop(); Dash.setGpsOn(false)
+    }
+
     private fun stopLink() {
+        if (::gps.isInitialized) { gps.stop(); Dash.setGpsOn(false) }
         job?.cancel(); job = null
         notifJob?.cancel(); notifJob = null
         transport?.close(); transport = null

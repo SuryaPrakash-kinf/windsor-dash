@@ -34,7 +34,8 @@ object LocalLog {
 
     private const val HEADER =
         "time,status,soc_pct,soh_pct,energy_left_kwh,pack_v,current_a,power_kw," +
-            "max_cell_mv,max_cell_no,min_cell_mv,min_cell_no,cell_spread_mv,batt_temp_c,aux_12v,odometer_km"
+            "max_cell_mv,max_cell_no,min_cell_mv,min_cell_no,cell_spread_mv,batt_temp_c,aux_12v,odometer_km," +
+            "odo_shown_km,odo_source,trip_km,trip_dist_source"
 
     fun init(ctx: Context) {
         if (::dir.isInitialized) return
@@ -49,7 +50,7 @@ object LocalLog {
         event(if (on) "logging on" else "logging off", force = true)
     }
 
-    fun sample(s: Sample, status: LinkStatus, powerKw: Double?) {
+    fun sample(s: Sample, status: LinkStatus, powerKw: Double?, st: DashState) {
         if (!enabled || !::dir.isInitialized) return
         io.execute {
             runCatching {
@@ -61,6 +62,7 @@ object LocalLog {
                         s.socPct, s.sohPct, s.energyLeftKwh?.r(1), s.packV?.r(1), s.currentA?.r(1), powerKw?.r(2),
                         s.maxCellMv, s.maxCellId, s.minCellMv, s.minCellId, spread,
                         s.battTempC, s.aux12V?.r(2), s.odometerKm,
+                        st.odoKm?.r(1), st.odoSource.name.lowercase(), st.trip?.km?.r(2), st.trip?.distSource,
                     ).joinToString(",") { it?.toString() ?: "" }
                 )
                 w.newLine()
@@ -92,6 +94,10 @@ object LocalLog {
         if (cur != null && writerDay == d) return cur
         closeWriter()
         val f = File(dir, "samples-$d.csv")
+        // An older app version wrote a different header: keep that file aside.
+        if (f.exists() && runCatching { f.bufferedReader().use { it.readLine() } }.getOrNull() != HEADER) {
+            f.renameTo(File(dir, "samples-$d-v1.csv"))
+        }
         val fresh = !f.exists()
         return BufferedWriter(FileWriter(f, true)).also {
             if (fresh) { it.write(HEADER); it.newLine() }

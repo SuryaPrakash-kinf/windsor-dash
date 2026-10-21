@@ -16,6 +16,14 @@ The app makes no network calls except to a Wi-Fi OBD dongle. It has no analytics
 
 From the Logs panel: **Save to Downloads** (copies to `Download/WindsorDash`), **Share**, **Delete**, or switch logging off. Demo mode is never logged.
 
+## Odometer
+EVDS (and v0.1 of this app) ask for the odometer at ECU 744/74C, DID B921. That address is copied from the MG ZS EV profile. The Windsor is a different platform (Wuling Cloud EV) with its own ECUs, so it usually gets no answer there.
+
+How this app handles it:
+- **GPS distance:** while the car link is live, the phone's GPS measures distance driven, filtering out poor fixes, parked drift and jumps. Trips use it, so Wh/km works without the car's odometer.
+- **App odometer:** your dashboard reading plus GPS km since. Tap **Correct** whenever you like to re-anchor it. Kilometres driven with the app not connected aren't counted until you correct it.
+- **Find in car:** enter the dashboard reading with the car on and parked. The app tries the standard OBD odometer (01 A6), finds which ECUs answer (tester-present 3E 00), then reads DID ranges DDxx, B9xx, E1xx, D0xx and 01xx on each one. It looks for a 2–4 byte value matching your reading at ÷1/10/100/1000. Everything it sends is a read-only request. A strong match is saved automatically; weak ones are listed for you to choose. Once saved, the car's own reading takes over and re-anchors the GPS count.
+
 ## Adapters
 Bluetooth LE (Vgate iCar Pro BLE, Veepeak BLE, OBDLink CX, vLinker BLE…), classic Bluetooth (pair it in Android settings first) and Wi-Fi (192.168.0.10:35000). There's also a **Demo** adapter that simulates the car, so you can try the Android Auto screens without the car.
 
@@ -30,7 +38,7 @@ Bluetooth LE (Vgate iCar Pro BLE, Veepeak BLE, OBDLink CX, vLinker BLE…), clas
 | BMS | 742 / 74A | D06A / D06C | Max / min cell | u16, mV |
 | BMS | 742 / 74A | D06B / D06D | Max / min cell number | u8 |
 | Thermal | 745 / 74D | A021 | Battery temperature | u8, °C |
-| Cluster | 744 / 74C | B921 | Odometer | u24, km |
+| Cluster? | 744 / 74C | B921 | Odometer (ZS EV guess — usually no reply on Windsor) | u24, km |
 
 Range = energy left ÷ efficiency (this trip once ≥ 5 km, otherwise your lifetime average, otherwise 130 Wh/km).
 

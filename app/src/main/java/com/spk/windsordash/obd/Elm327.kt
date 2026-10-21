@@ -40,6 +40,9 @@ class Elm327(private val t: ObdTransport) {
         return id
     }
 
+    /** Forget which ECU is targeted (after raw commands changed headers/filters). */
+    fun forgetTarget() { currentHeader = null }
+
     /** Points requests at an ECU: request id [tx], response filter [rx] (11-bit CAN). */
     suspend fun target(tx: String, rx: String) {
         if (currentHeader == tx) return
@@ -63,13 +66,35 @@ class Elm327(private val t: ObdTransport) {
     companion object {
         /** Finds "62<DID><data>" in a raw ELM reply (with or without spaces/line numbers). */
         fun parseDid(resp: String, did: String, bytes: Int): IntArray? {
-            val clean = resp.uppercase().replace(Regex("[^0-9A-F]"), "")
-            val key = "62" + did.uppercase()
-            val at = clean.indexOf(key)
+            val all = payloadAfter(resp, "62" + did.uppercase()) ?: return null
+            if (all.size < bytes) return null
+            return all.copyOf(bytes)
+        }
+
+        /** Every data byte following [key] (hex, e.g. "62DD01"), joining ELM multi-frame lines. */
+        fun payloadAfter(resp: String, key: String): IntArray? {
+            val clean = joinFrames(resp)
+            val at = clean.indexOf(key.uppercase())
             if (at < 0) return null
-            val start = at + key.length
-            if (clean.length < start + bytes * 2) return null
-            return IntArray(bytes) { i -> clean.substring(start + i * 2, start + i * 2 + 2).toInt(16) }
+            val hex = clean.substring(at + key.length).let { it.substring(0, it.length - it.length % 2) }
+            return IntArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16) }
+        }
+
+        /**
+         * ELM327 (CAF on, headers off) prints long ISO-TP replies as
+         * "014\r0: 62DD01...\r1: ...". Drop the byte-count line and "n:" prefixes.
+         */
+        fun joinFrames(resp: String): String {
+            val lines = resp.uppercase().split('\r', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+            val multi = lines.any { Regex("^[0-9A-F]:").containsMatchIn(it) }
+            return lines.mapNotNull { l ->
+                val m = Regex("^([0-9A-F]):\\s*(.*)$").find(l)
+                when {
+                    m != null -> m.groupValues[2]
+                    multi && Regex("^[0-9A-F]{3}$").matches(l) -> null
+                    else -> l
+                }
+            }.joinToString("").replace(Regex("[^0-9A-F]"), "")
         }
     }
 }

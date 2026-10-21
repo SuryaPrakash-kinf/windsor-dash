@@ -32,6 +32,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import com.spk.windsordash.data.OdoSource
+import com.spk.windsordash.obd.OdoFinder
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -92,7 +97,9 @@ class MainActivity : ComponentActivity() {
         val perms = buildList {
             if (Build.VERSION.SDK_INT >= 31) {
                 add(Manifest.permission.BLUETOOTH_SCAN); add(Manifest.permission.BLUETOOTH_CONNECT)
-            } else add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+            // GPS trip distance (and Bluetooth scanning on Android 11 and older)
+            add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         }
         afterPermission = block
@@ -237,7 +244,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             }
             val t = st.trip
             Grid(
-                "Distance" to (t?.let { "${it.km} km" } ?: "–"),
+                "Distance" to (t?.let { "%.1f km (%s)".format(it.km, it.distSource) } ?: "–"),
                 "Efficiency" to (t?.whPerKm?.let { "${it.roundToInt()} Wh/km" } ?: "–"),
                 "Energy used" to (t?.let { "%.2f kWh".format(it.netWh / 1000) } ?: "–"),
                 "Regen" to (t?.let { "%.2f kWh".format(it.regenWh / 1000) } ?: "–"),
@@ -256,7 +263,6 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
                 "Lowest cell" to (s.minCellMv?.let { "$it mV" + (s.minCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
                 "Cell spread" to (delta?.let { "$it mV" } ?: "–"),
                 "12 V battery" to (s.aux12V?.let { "%.1f V".format(it) } ?: "–"),
-                "Odometer" to (s.odometerKm?.let { "$it km" } ?: "–"),
             )
             if (delta != null && delta > 50) {
                 Spacer(Modifier.height(6.dp))
@@ -264,6 +270,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             }
         }
 
+        OdometerPanel(st)
         LogsPanel()
 
         Text(
@@ -275,6 +282,114 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             "Android Auto: open the Windsor Dash tile in the car's app launcher. Sideloaded apps need " +
                 "Android Auto → Settings → tap Version 10× → ⋮ Developer settings → Unknown sources.",
             color = Dim, fontSize = 12.sp
+        )
+    }
+}
+
+@Composable
+private fun OdometerPanel(st: DashState) {
+    val finder by OdoFinder.state.collectAsStateWithLifecycle()
+    var ask by remember { mutableStateOf<String?>(null) }   // "set" or "find"
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Odometer", color = Dim, fontSize = 13.sp)
+                Text(
+                    st.odoKm?.let { "%,.0f km".format(it) } ?: "–",
+                    color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.SemiBold
+                )
+            }
+            val (tag, col) = when (st.odoSource) {
+                OdoSource.CAR -> "from car" to Green
+                OdoSource.GPS -> "GPS-tracked" to Amber
+                OdoSource.NONE -> "not set" to Dim
+            }
+            Text(tag, color = col, fontSize = 12.sp)
+        }
+        Text(st.odoNote, color = Dim, fontSize = 12.sp)
+        if (!st.gpsOn && st.status == LinkStatus.LIVE) {
+            Text("GPS is off — allow Location for Windsor Dash to count distance.", color = Amber, fontSize = 12.sp)
+        }
+        st.odoSpec?.let { Text("Car odometer location: ${it.describe()}", color = Dim, fontSize = 11.sp) }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { ask = "set" }) { Text("Correct") }
+            OutlinedButton(
+                onClick = { ask = "find" },
+                enabled = st.status == LinkStatus.LIVE && !finder.running,
+            ) { Text("Find in car") }
+            if (st.odoSpec != null) TextButton(onClick = { Dash.saveOdoSpec(null) }) { Text("Forget", color = Red) }
+        }
+
+        // Finder progress / results
+        if (finder.running || finder.finished) {
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = Line)
+            Spacer(Modifier.height(8.dp))
+            Text(finder.text, color = Color.White, fontSize = 13.sp)
+            if (finder.running) {
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    progress = { finder.progress }, modifier = Modifier.fillMaxWidth(),
+                    color = Teal, trackColor = Line,
+                )
+                Text("Car on and parked. Takes 5–20 min; live readings pause meanwhile.", color = Dim, fontSize = 11.sp)
+            }
+            if (finder.ecus.isNotEmpty()) Text("ECUs answering: ${finder.ecus.joinToString(", ")}", color = Dim, fontSize = 11.sp)
+            for (m in finder.matches) {
+                val saved = st.odoSpec == m.spec
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "%.1f km · %s".format(m.valueKm, if (m.confident) "strong match" else "weak match"),
+                            color = if (m.confident) Green else Amber, fontSize = 13.sp
+                        )
+                        Text(m.spec.describe(), color = Dim, fontSize = 11.sp)
+                    }
+                    if (saved) Text("in use", color = Green, fontSize = 12.sp)
+                    else TextButton(onClick = { Dash.saveOdoSpec(m.spec) }) { Text("Use") }
+                }
+            }
+            Row {
+                if (finder.running) TextButton(onClick = { OdoFinder.cancel() }) { Text("Stop search", color = Red) }
+                else TextButton(onClick = { OdoFinder.dismiss() }) { Text("Close") }
+            }
+        }
+    }
+
+    ask?.let { mode ->
+        var text by remember { mutableStateOf(st.odoKm?.toInt()?.toString() ?: "") }
+        AlertDialog(
+            onDismissRequest = { ask = null },
+            containerColor = Card,
+            title = { Text(if (mode == "set") "Dashboard odometer" else "Find the odometer") },
+            text = {
+                Column {
+                    Text(
+                        if (mode == "set") "Type the km shown on the instrument cluster. GPS distance counts on from here."
+                        else "Type the km shown on the cluster right now. The app reads the car's modules looking for that " +
+                            "number (read-only). Keep the car on and parked.",
+                        color = Dim, fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = text, onValueChange = { v -> text = v.filter { it.isDigit() }.take(7) },
+                        singleLine = true, label = { Text("km") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val km = text.toIntOrNull()
+                    if (km != null && km > 0) {
+                        Dash.setOdometer(km)
+                        if (mode == "find") OdoFinder.request(km)
+                    }
+                    ask = null
+                }) { Text(if (mode == "set") "Save" else "Start search") }
+            },
+            dismissButton = { TextButton(onClick = { ask = null }) { Text("Cancel") } },
         )
     }
 }

@@ -34,7 +34,6 @@ object WindsorProfile {
 
     private const val BMS_TX = "742"; private const val BMS_RX = "74A"
     private const val THERM_TX = "745"; private const val THERM_RX = "74D"
-    private const val IPK_TX = "744"; private const val IPK_RX = "74C"
 
     /** Cheap check that the car on the other end is a Windsor (BMS answers D038). */
     suspend fun probe(elm: Elm327): Boolean {
@@ -47,12 +46,23 @@ object WindsorProfile {
         return false
     }
 
-    /** Polls forever, emitting a merged [Sample] after every cycle. */
-    suspend fun poll(elm: Elm327, emit: (Sample) -> Unit) {
+    /**
+     * Polls forever, emitting a merged [Sample] after every cycle.
+     * [odoSpec] says where to read the odometer (null = try the ZS EV guess, then give up).
+     * [between] runs between cycles (used by the odometer finder).
+     */
+    suspend fun poll(
+        elm: Elm327,
+        odoSpec: () -> OdoSpec?,
+        between: suspend () -> Unit = {},
+        emit: (Sample) -> Unit,
+    ) {
         var last = Sample()
         var cycle = 0
         var misses = 0
+        var odoFails = 0
         while (currentCoroutineContext().isActive) {
+            between()
             var s = last.copy(at = System.currentTimeMillis())
             var gotAny = false
 
@@ -87,9 +97,14 @@ object WindsorProfile {
                 elm.voltage12V()?.let { if (it in 6.0..16.0) s = s.copy(aux12V = it) }
             }
 
-            if (cycle % 30 == 3) {
-                elm.target(IPK_TX, IPK_RX)
-                elm.readDid("B921", 3, 600)?.u24()?.let { if (it in 1..1_999_999) s = s.copy(odometerKm = it) }
+            // Odometer: saved location if the finder found one; otherwise the ZS EV guess,
+            // abandoned after 3 failures (retried every ~10 min).
+            val spec = odoSpec() ?: OdoSpec.ZS_EV_GUESS.takeIf { odoFails < 3 || cycle % 600 == 3 }
+            if (spec != null && cycle % 30 == 3) {
+                val km = readOdometer(elm, spec)
+                if (km != null && km >= 1 && km < 2_000_000) {
+                    s = s.copy(odometerKm = km.toInt()); odoFails = 0
+                } else odoFails++
             }
 
             if (gotAny) misses = 0 else misses++
@@ -99,6 +114,16 @@ object WindsorProfile {
             emit(s)
             cycle++
             delay(150)
+        }
+    }
+
+    suspend fun readOdometer(elm: Elm327, spec: OdoSpec): Double? {
+        return if (spec.isObd) {
+            elm.query("ATSH7DF", 300); elm.query("ATCRA${spec.rx}", 300); elm.forgetTarget()
+            Elm327.payloadAfter(elm.query("01A6", 500), "41A6")?.let { spec.decode(it) }
+        } else {
+            elm.target(spec.tx, spec.rx)
+            Elm327.payloadAfter(elm.query("22${spec.did}", 600), "62${spec.did}")?.let { spec.decode(it) }
         }
     }
 
