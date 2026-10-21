@@ -142,7 +142,7 @@ class LiveScreen(ctx: CarContext) : DashScreen(ctx) {
             row(powerTitle, powerText),
             row(
                 "Trip ${st.trip?.whPerKm?.let { "${it.roundToInt()} Wh/km" } ?: "–"}",
-                st.trip?.let { "%.1f km · %.1f kWh used".format(it.km, it.netWh / 1000) },
+                st.trip?.let { "%.1f km · %.1f kWh used".format(it.km, it.netWh / 1000) + (it.avgMovingKmh?.let { v -> " · avg %.0f km/h".format(v) } ?: "") },
             ) { screenManager.push(TripScreen(carContext)) },
         )
         val c = st.charge
@@ -201,6 +201,10 @@ class TripScreen(ctx: CarContext) : DashScreen(ctx) {
             row("Efficiency ${t.whPerKm?.let { "${it.roundToInt()} Wh/km" } ?: "– (drive 1 km)"}",
                 t.kwhPer100?.let { "%.1f kWh/100 km".format(it) }),
             row("%.1f km in %s".format(t.km, mins(elapsed)), "Distance from ${t.distSource}" + (st.odoKm?.let { " · odo %,.0f km".format(it) } ?: "")),
+            row(
+                "Avg speed ${t.avgMovingKmh?.let { "%.0f km/h".format(it) } ?: "–"}",
+                "Moving ${mins(t.movingMs / 60_000)}" + (t.avgOverallKmh()?.let { " · %.0f km/h incl. stops".format(it) } ?: ""),
+            ),
             row("%.2f kWh used".format(t.netWh / 1000), "%.2f kWh recovered by regen".format(t.regenWh / 1000)),
             row("Est. range ${st.rangeKm?.let { "$it km" } ?: "–"}", "Based on ${st.effSource} (${st.effWhKm?.roundToInt() ?: "–"} Wh/km)"),
         )

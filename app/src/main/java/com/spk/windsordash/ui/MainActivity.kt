@@ -248,6 +248,10 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
                 "Efficiency" to (t?.whPerKm?.let { "${it.roundToInt()} Wh/km" } ?: "–"),
                 "Energy used" to (t?.let { "%.2f kWh".format(it.netWh / 1000) } ?: "–"),
                 "Regen" to (t?.let { "%.2f kWh".format(it.regenWh / 1000) } ?: "–"),
+                "Avg speed (moving)" to (t?.avgMovingKmh?.let { "%.0f km/h".format(it) } ?: "–"),
+                "Avg incl. stops" to (t?.avgOverallKmh()?.let { "%.0f km/h".format(it) } ?: "–"),
+                "Moving time" to (t?.let { minutes(it.movingMs / 60_000) } ?: "–"),
+                "Trip time" to (t?.let { minutes((System.currentTimeMillis() - it.startedAt) / 60_000) } ?: "–"),
             )
         }
 

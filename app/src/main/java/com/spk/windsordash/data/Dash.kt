@@ -26,12 +26,20 @@ data class Trip(
     val gpsKm: Double = 0.0,       // from phone GPS
     val netWh: Double = 0.0,       // energy used minus regen
     val regenWh: Double = 0.0,
+    val movingMs: Long = 0,        // time actually moving (stops excluded)
 ) {
     /** GPS when we have it (finer), else the car's odometer. */
     val km: Double get() = if (gpsKm >= 0.2) gpsKm else odoKm.toDouble()
     val distSource: String get() = if (gpsKm >= 0.2) "GPS" else if (odoKm > 0) "odometer" else "—"
     val whPerKm: Double? get() = if (km >= 1) netWh / km else null
     val kwhPer100: Double? get() = whPerKm?.let { it / 10 }
+    /** Average while moving — what most trip computers show. */
+    val avgMovingKmh: Double? get() = if (km >= 0.5 && movingMs >= 60_000) km / (movingMs / 3_600_000.0) else null
+    /** Average including stops, since the trip started. */
+    fun avgOverallKmh(now: Long = System.currentTimeMillis()): Double? {
+        val h = (now - startedAt) / 3_600_000.0
+        return if (km >= 0.5 && h > 0) km / h else null
+    }
 }
 
 data class ChargeSession(
@@ -212,8 +220,8 @@ object Dash {
     }
 
     private fun logTrip(t: Trip, why: String) = LocalLog.event(
-        "$why: %.1f km (%s), %.2f kWh used, %.2f kWh regen, %s Wh/km".format(
-            t.km, t.distSource, t.netWh / 1000, t.regenWh / 1000, t.whPerKm?.let { "%.0f".format(it) } ?: "n/a"
+        "$why: %.1f km (%s), avg %s km/h moving, %.2f kWh used, %.2f kWh regen, %s Wh/km".format(
+            t.km, t.distSource, t.avgMovingKmh?.let { "%.0f".format(it) } ?: "n/a", t.netWh / 1000, t.regenWh / 1000, t.whPerKm?.let { "%.0f".format(it) } ?: "n/a"
         )
     )
 
@@ -256,6 +264,13 @@ object Dash {
             val wh = kw * 1000 * dtH
             trip = trip.copy(netWh = trip.netWh + wh, regenWh = trip.regenWh + if (wh < 0) -wh else 0.0)
             whSinceOdo += wh
+        }
+        // Moving time: GPS says we're moving (fix counted in the last 5 s);
+        // without GPS, the motor drawing more than 1 kW.
+        if (!charging && dtH > 0) {
+            val gpsOn = now - lastGpsAt < 60_000
+            val moving = if (gpsOn) now - lastGpsAt < 5_000 else (kw ?: 0.0) > 1.0
+            if (moving) trip = trip.copy(movingMs = trip.movingMs + (dtH * 3_600_000).toLong())
         }
         val odoNow = s.odometerKm
         val odoStart = trip.startOdoKm
