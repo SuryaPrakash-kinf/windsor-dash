@@ -70,7 +70,7 @@
             android:icon="@drawable/ic_launcher">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
-                <category android:name="androidx.car.app.category.IOT" />
+                <category android:name="androidx.car.app.category.CHARGING" />
             </intent-filter>
         </service>
 
