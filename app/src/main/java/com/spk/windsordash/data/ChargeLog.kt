@@ -92,13 +92,15 @@ object ChargeLog {
             type = if (s.peakKw >= 12) ChargerType.DC_FAST else ChargerType.UNKNOWN,
             socStart = s.startSoc?.toInt(), socEnd = s.endSoc?.toInt(),
             kwhBattery = s.addedKwh, peakKw = s.peakKw, odometerKm = odometerKm, auto = true,
+            notes = s.gapNote ?: "",
         )
         // Keep anything you already typed for this session.
         val old = load().firstOrNull { it.id == e.id }
         upsert(
             if (old == null) e else e.copy(
                 type = if (old.type != ChargerType.UNKNOWN) old.type else e.type,
-                kwhBilled = old.kwhBilled, costInr = old.costInr, station = old.station, notes = old.notes,
+                kwhBilled = old.kwhBilled, costInr = old.costInr, station = old.station,
+                notes = old.notes.ifBlank { e.notes },
             )
         )
     }

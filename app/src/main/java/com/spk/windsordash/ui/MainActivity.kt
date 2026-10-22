@@ -118,6 +118,84 @@ class MainActivity : ComponentActivity() {
         permLauncher.launch(perms.toTypedArray())
     }
 
+    /* ---------- auto-connect (Android 12+) ---------- */
+
+    private var pendingAutoAddr: String? = null
+    private val cdmLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+        val a = pendingAutoAddr
+        if (res.resultCode == RESULT_OK && a != null) observeAuto(a)
+        else android.widget.Toast.makeText(this, "Auto-connect not set up", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun prefs() = getSharedPreferences("dash", MODE_PRIVATE)
+    fun autoConnectName(): String? = prefs().getString("auto_name", null)
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun setupAutoConnect(address: String, name: String) {
+        if (Build.VERSION.SDK_INT < 31) {
+            android.widget.Toast.makeText(this, "Auto-connect needs Android 12 or newer", android.widget.Toast.LENGTH_LONG).show(); return
+        }
+        val cdm = getSystemService(android.companion.CompanionDeviceManager::class.java)
+        pendingAutoAddr = address
+        prefs().edit().putString("auto_name_pending", name).apply()
+        @Suppress("DEPRECATION")
+        val known = cdm.associations.any { it.equals(address, true) }
+        if (known) { observeAuto(address); return }
+        val req = android.companion.AssociationRequest.Builder()
+            .addDeviceFilter(android.companion.BluetoothDeviceFilter.Builder().setAddress(address).build())
+            .setSingleDevice(true).build()
+        val cb = object : android.companion.CompanionDeviceManager.Callback() {
+            @Deprecated("Deprecated in Java")
+            override fun onDeviceFound(sender: android.content.IntentSender) {
+                cdmLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build())
+            }
+            override fun onAssociationPending(sender: android.content.IntentSender) {
+                cdmLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build())
+            }
+            override fun onAssociationCreated(info: android.companion.AssociationInfo) { observeAuto(address) }
+            override fun onFailure(error: CharSequence?) {
+                runOnUiThread { android.widget.Toast.makeText(this@MainActivity, "Couldn't set up: $error", android.widget.Toast.LENGTH_LONG).show() }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            cdm.associate(req, mainExecutor, cb)
+        } else {
+            @Suppress("DEPRECATION")
+            cdm.associate(req, cb, null)
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun observeAuto(address: String) {
+        if (Build.VERSION.SDK_INT < 31) return
+        runCatching {
+            @Suppress("DEPRECATION")
+            getSystemService(android.companion.CompanionDeviceManager::class.java).startObservingDevicePresence(address)
+        }.onSuccess {
+            val name = prefs().getString("auto_name_pending", address)
+            prefs().edit().putString("auto_addr", address).putString("auto_name", name).apply()
+            android.widget.Toast.makeText(this, "Auto-connect on: $name", android.widget.Toast.LENGTH_LONG).show()
+        }.onFailure {
+            android.widget.Toast.makeText(this, "Couldn't watch the device: ${it.message}", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun turnOffAutoConnect() {
+        val a = prefs().getString("auto_addr", null) ?: return
+        if (Build.VERSION.SDK_INT >= 31) runCatching {
+            val cdm = getSystemService(android.companion.CompanionDeviceManager::class.java)
+            @Suppress("DEPRECATION") cdm.stopObservingDevicePresence(a)
+            @Suppress("DEPRECATION") cdm.disassociate(a)
+        }
+        prefs().edit().remove("auto_addr").remove("auto_name").apply()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (Dash.state.value.status != LinkStatus.IDLE) LinkService.refresh(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Dash.init(this)
@@ -189,6 +267,7 @@ private fun Screen(
             "Adapter: ${st.adapter?.name ?: "none chosen"}  ·  change",
             color = Teal, fontSize = 13.sp, modifier = Modifier.clickable(onClick = onPick)
         )
+        AutoConnectLine()
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onReport) { Text("Report") }
             OutlinedButton(onClick = onCharges) { Text("Charging log") }
@@ -253,7 +332,15 @@ private fun Screen(
         // Charging
         st.charge?.let { c ->
             Panel {
-                Text(if (c.active) "Charging session" else "Last charge", color = Dim, fontSize = 13.sp)
+                Text(
+                    when {
+                        c.active && st.status != LinkStatus.LIVE -> "Charging — car not answering (fills in on reconnect)"
+                        c.active -> "Charging session"
+                        else -> "Last charge"
+                    },
+                    color = if (c.active && st.status != LinkStatus.LIVE) Amber else Dim, fontSize = 13.sp
+                )
+                c.gapNote?.let { Text(it, color = Dim, fontSize = 11.sp) }
                 Spacer(Modifier.height(4.dp))
                 Grid(
                     "Added" to "%.2f kWh".format(c.addedKwh),
@@ -300,6 +387,7 @@ private fun Screen(
             val delta = st.cellDeltaMv
             Grid(
                 "Health (SoH)" to (s.sohPct?.let { "${it.roundToInt()} %" } ?: "–"),
+                "Capacity (calc.)" to (st.capacityKwh?.let { "%.1f kWh · %.0f%%".format(it, it / WindsorProfile.RATED_KWH * 100) } ?: "at ≥80 % SoC"),
                 "Highest cell" to (s.maxCellMv?.let { "$it mV" + (s.maxCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
                 "Lowest cell" to (s.minCellMv?.let { "$it mV" + (s.minCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
                 "Cell spread" to (delta?.let { "$it mV" } ?: "–"),
@@ -312,6 +400,7 @@ private fun Screen(
         }
 
         RunsPanel(st)
+        CellWatchPanel()
         OdometerPanel(st)
         LogsPanel()
 
@@ -538,6 +627,14 @@ private fun LogsPanel() {
         }
         Text("Older samples/raw files are deleted daily (also in your chosen folder). runs.csv and events.csv are kept.",
             color = Dim, fontSize = 11.sp)
+        var alerts by remember { mutableStateOf(com.spk.windsordash.data.Alerts.enabled) }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Charging alerts", color = Color.White, fontSize = 14.sp)
+                Text("Target reached, charge finished, car stopped answering mid-charge.", color = Dim, fontSize = 12.sp)
+            }
+            Switch(checked = alerts, onCheckedChange = { alerts = it; com.spk.windsordash.data.Alerts.setEnabled(it) })
+        }
         var research by remember { mutableStateOf(LocalLog.research) }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
             Column(Modifier.weight(1f)) {
@@ -680,4 +777,104 @@ private fun PickRow(title: String, sub: String, highlight: Boolean = false, onCl
         Text(title, color = if (highlight) Teal else Color.White, fontWeight = FontWeight.Medium)
         Text(sub, color = Dim, fontSize = 12.sp)
     }
+}
+
+
+/* ---------------- auto-connect ---------------- */
+
+@android.annotation.SuppressLint("MissingPermission")
+@Composable
+private fun AutoConnectLine() {
+    val ctx = LocalContext.current
+    val act = ctx as? MainActivity ?: return
+    var name by remember { mutableStateOf(act.autoConnectName()) }
+    var picking by remember { mutableStateOf(false) }
+    Text(
+        if (name != null) "Auto-connect: when “$name” connects  ·  change" else "Auto-connect: off  ·  set up",
+        color = Teal, fontSize = 13.sp, modifier = Modifier.clickable { picking = true }
+    )
+    if (picking) {
+        val bonded = remember {
+            runCatching { android.bluetooth.BluetoothAdapter.getDefaultAdapter()?.bondedDevices.orEmpty().toList() }
+                .getOrDefault(emptyList()).sortedBy { it.name ?: it.address }
+        }
+        AlertDialog(
+            onDismissRequest = { picking = false },
+            containerColor = Card,
+            title = { Text("Auto-connect") },
+            text = {
+                Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "Pick your car's Bluetooth — the one calls / Android Auto use. When the car connects to " +
+                            "your phone, Windsor Dash starts and connects to the OBD dongle by itself. " +
+                            "(A Bluetooth LE dongle can be picked instead.) Android will ask you to confirm.",
+                        color = Dim, fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    for (d in bonded) {
+                        val n = d.name ?: d.address
+                        Column(Modifier.fillMaxWidth().clickable {
+                            picking = false
+                            act.setupAutoConnect(d.address, n)
+                        }.padding(vertical = 10.dp)) {
+                            Text(n, color = Color.White)
+                            Text(d.address, color = Dim, fontSize = 11.sp)
+                        }
+                    }
+                    if (bonded.isEmpty()) Text("No paired Bluetooth devices found.", color = Amber)
+                }
+            },
+            confirmButton = { TextButton(onClick = { picking = false }) { Text("Close") } },
+            dismissButton = {
+                if (name != null) TextButton(onClick = { act.turnOffAutoConnect(); name = null; picking = false }) {
+                    Text("Turn off", color = Red)
+                }
+            },
+        )
+    }
+    LaunchedEffect(picking) { if (!picking) { delay(1500); name = act.autoConnectName() } }
+}
+
+/* ---------------- cell watch ---------------- */
+
+@Composable
+private fun CellWatchPanel() {
+    val snap by com.spk.windsordash.data.CellWatch.state.collectAsStateWithLifecycle()
+    var confirm by remember { mutableStateOf(false) }
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Cell watch", color = Dim, fontSize = 13.sp)
+                Text(
+                    if (snap.since > 0) "Which cells the battery reports as lowest / highest, since " +
+                        java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(java.util.Date(snap.since))
+                    else "Fills in as you drive and charge",
+                    color = Dim, fontSize = 11.sp
+                )
+            }
+            TextButton(onClick = { confirm = true }) { Text("Reset") }
+        }
+        for (c in com.spk.windsordash.data.CellWatch.Cond.entries) {
+            val top = snap.top(c)
+            Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                Text(c.label, color = Color.White, fontSize = 13.sp)
+                Text(
+                    if (top.isEmpty()) "no readings yet"
+                    else top.joinToString("   ") { (id, pct) -> "#$id ${pct.roundToInt()}%" } + "   (${snap.total(c)} readings)",
+                    color = if (top.firstOrNull()?.second ?: 0.0 >= 50) Amber else Dim, fontSize = 12.sp
+                )
+            }
+        }
+        Text(
+            "A cell that's lowest most of the time under load, or highest when full, is the one to watch over months. " +
+                "Small spreads (under ~20 mV) make this a curiosity, not a problem.",
+            color = Dim, fontSize = 11.sp
+        )
+    }
+    if (confirm) AlertDialog(
+        onDismissRequest = { confirm = false }, containerColor = Card,
+        title = { Text("Reset cell watch?") },
+        confirmButton = { TextButton(onClick = { com.spk.windsordash.data.CellWatch.reset(); confirm = false }) { Text("Reset", color = Red) } },
+        dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+    )
 }

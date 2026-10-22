@@ -62,8 +62,28 @@ data class ChargeSession(
     val peakKw: Double = 0.0,
     val endedAt: Long? = null,
     val endSoc: Double? = null,
+    /** Set when the link dropped mid-charge and the missing part came from the battery's own counters. */
+    val gapNote: String? = null,
 ) {
     val active get() = endedAt == null
+}
+
+/** A charge that was in progress when the car stopped answering (e.g. locked while charging). */
+private data class PausedCharge(
+    val session: ChargeSession, val lossAt: Long, val socAtLoss: Double?, val energyAtLoss: Double?,
+) {
+    fun encode() = listOf(session.startedAt, session.startSoc ?: "", session.addedKwh, session.peakKw,
+        lossAt, socAtLoss ?: "", energyAtLoss ?: "").joinToString("|")
+
+    companion object {
+        fun decode(s: String?): PausedCharge? = runCatching {
+            val p = s!!.split('|')
+            PausedCharge(
+                ChargeSession(p[0].toLong(), p[1].toDoubleOrNull(), p[2].toDouble(), p[3].toDouble()),
+                p[4].toLong(), p[5].toDoubleOrNull(), p[6].toDoubleOrNull(),
+            )
+        }.getOrNull()
+    }
 }
 
 data class DashState(
@@ -89,6 +109,13 @@ data class DashState(
     val run: Run? = null,             // drive in progress
 ) {
     val hasData get() = sample.at > 0 && (status == LinkStatus.LIVE || status == LinkStatus.DEMO)
+    /** Energy left ÷ SoC, only at ≥ 80 % SoC where the 1 % rounding matters least. Calculated, not a BMS value. */
+    val capacityKwh: Double?
+        get() {
+            val soc = sample.socPct ?: return null
+            val e = sample.energyLeftKwh ?: return null
+            return if (soc >= 80) e / (soc / 100) else null
+        }
     val cellDeltaMv get() = sample.maxCellMv?.let { mx -> sample.minCellMv?.let { mx - it } }
 
     /** Minutes until [targetSoc] at the current charge rate. */
@@ -119,6 +146,9 @@ object Dash {
     private var lastFixAt = 0L
     private var lastFixSpeed: Float? = null
     private var inflowWh = 0.0          // energy flowing in before we decided it's a charge
+    private var paused: PausedCharge? = null
+    private var targetAlerted = false
+    private val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
     private var lastOdo: Int? = null
     private var whSinceOdo = 0.0
     private var lastGpsAt = 0L
@@ -138,6 +168,60 @@ object Dash {
             )
         }
         refreshOdo(null)
+        paused = PausedCharge.decode(prefs.getString("paused_charge", null))
+        Alerts.init(ctx.applicationContext)
+        CellWatch.init(ctx.applicationContext)
+    }
+
+    private fun setPaused(p: PausedCharge?) {
+        paused = p
+        prefs.edit().apply { if (p == null) remove("paused_charge") else putString("paused_charge", p.encode()) }.apply()
+    }
+
+    /** Records a finished charge (log line, charges.csv, notification). */
+    private fun recordEnded(c: ChargeSession, why: String, odo: Int?) {
+        lastRealCharge = c
+        logCharge(c, why)
+        Thread { runCatching { ChargeLog.addAuto(c, odo) } }.start()
+        Alerts.chargeFinished(c)
+    }
+
+    /**
+     * After reconnecting: finish (or resume) a charge that was cut off when the car stopped answering.
+     * Missing energy = battery energy-left now − at the moment the link dropped (both read from the BMS).
+     */
+    private fun resolvePaused(s: Sample, kw: Double?, now: Long) {
+        val p = paused ?: return
+        val soc = s.socPct ?: return
+        if (p.energyAtLoss != null && s.energyLeftKwh == null) return   // wait for the energy reading
+        setPaused(null)
+        val odo = _state.value.odoKm?.toInt()
+        val socGain = p.socAtLoss?.let { soc - it } ?: 0.0
+        val eNow = s.energyLeftKwh
+        val gapKwh = if (p.energyAtLoss != null && eNow != null) (eNow - p.energyAtLoss).coerceAtLeast(0.0) else 0.0
+        val stale = now - p.lossAt > 16 * 3_600_000L
+        if (stale || (socGain < 1 && gapKwh < 0.2)) {
+            // Nothing charged while we were away: end it where the link dropped.
+            val ended = p.session.copy(endedAt = p.lossAt, endSoc = p.socAtLoss)
+            if (ended.addedKwh >= 0.1 && p.lossAt - ended.startedAt >= 60_000) {
+                recordEnded(ended, "charging ended (link lost)", odo)
+                _state.update { it.copy(charge = ended) }
+            } else _state.update { it.copy(charge = lastRealCharge) }
+            return
+        }
+        val note = "link lost ${hm.format(Date(p.lossAt))}–${hm.format(Date(now))}; " +
+            "%.1f kWh added meanwhile, from the battery's energy counter".format(gapKwh)
+        val merged = p.session.copy(addedKwh = p.session.addedKwh + gapKwh, gapNote = note)
+        LocalLog.event("charge gap filled: $note")
+        if (kw != null && kw < -0.3) {
+            // Still charging: carry on with the same session.
+            negSince = now - 30_000; posSince = 0; inflowWh = 0.0
+            _state.update { it.copy(charge = merged, charging = true) }
+        } else {
+            val ended = merged.copy(endedAt = now, endSoc = soc)
+            recordEnded(ended, "charging ended (filled after link loss)", odo)
+            _state.update { it.copy(charge = ended, charging = false) }
+        }
     }
 
     /* ---------------- odometer ---------------- */
@@ -291,6 +375,10 @@ object Dash {
 
     @Synchronized
     fun onSample(s: Sample) {
+        if (paused != null && _state.value.status != LinkStatus.DEMO) {
+            val k = if (s.packV != null && s.currentA != null) s.packV * s.currentA / 1000 else null
+            resolvePaused(s, k, s.at)
+        }
         val prev = _state.value
         val now = s.at
         val dtH = if (lastAt == 0L) 0.0 else ((now - lastAt).coerceIn(0, 5000)) / 3_600_000.0
@@ -373,7 +461,7 @@ object Dash {
             } else old
             if (justStarted) inflowWh = 0.0
             if (kw != null && kw < 0) base.copy(addedKwh = base.addedKwh + (-kw) * dtH, peakKw = maxOf(base.peakKw, -kw)) else base
-        } else if (old != null && old.active) {
+        } else if (old != null && old.active && paused == null) {
             val ended = old.copy(endedAt = now, endSoc = s.socPct)
             // Too small or too short to be a real charge: forget it, keep the previous real one.
             if (ended.addedKwh < 0.1 || now - ended.startedAt < 60_000) {
@@ -430,14 +518,19 @@ object Dash {
             }
         }
 
+        if (prev.status == LinkStatus.LIVE && s.maxCellId != null) {
+            CellWatch.record(s.maxCellId, s.minCellId, kw, charging, s.socPct)
+        }
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
             if (charge != null && charge.active && (old == null || !old.active)) LocalLog.event("charging started at ${s.socPct?.toInt() ?: "?"}%")
-            chargeEnded?.let { c ->
-                logCharge(c, "charging ended")
-                val odo = _state.value.odoKm?.toInt()
-                Thread { runCatching { ChargeLog.addAuto(c, odo) } }.start()
-            }
+            chargeEnded?.let { c -> recordEnded(c, "charging ended", _state.value.odoKm?.toInt()) }
+            // Target reached: notify once per session.
+            val cs = _state.value.charge
+            if (charging && cs != null && cs.active) {
+                val soc = s.socPct
+                if (soc != null && soc >= prev.targetSoc && !targetAlerted) { targetAlerted = true; Alerts.targetReached(soc, prev.targetSoc) }
+            } else if (!charging) targetAlerted = false
             if (chargeDiscarded) LocalLog.event("ignored a very short inflow (regen, not a charge)")
         }
     }
@@ -450,16 +543,15 @@ object Dash {
         var keep: ChargeSession? = c0
         if (c0 != null && c0.active) {
             val now = System.currentTimeMillis()
-            val ended = c0.copy(endedAt = now, endSoc = st0.sample.socPct)
-            if (ended.addedKwh < 0.1 || now - ended.startedAt < 60_000) {
+            if (st0.status == LinkStatus.DEMO) {
                 keep = lastRealCharge
             } else {
-                keep = ended; lastRealCharge = ended
-                if (st0.status != LinkStatus.DEMO) {
-                    logCharge(ended, "charging ended (link lost)")
-                    val odo = st0.odoKm?.toInt()
-                    Thread { runCatching { ChargeLog.addAuto(ended, odo) } }.start()
-                }
+                // Don't close it yet: the car may simply have gone to sleep (locked while charging).
+                // It's finished with the battery's own counters when the car answers again.
+                setPaused(PausedCharge(c0, now, st0.sample.socPct, st0.sample.energyLeftKwh))
+                LocalLog.event("charging: link lost at ${st0.sample.socPct?.toInt() ?: "?"}% — will fill in on reconnect")
+                Alerts.linkPausedWhileCharging()
+                keep = c0
             }
         }
         _state.update { it.copy(charge = keep, charging = false) }

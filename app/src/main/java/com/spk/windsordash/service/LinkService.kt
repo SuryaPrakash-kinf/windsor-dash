@@ -44,6 +44,7 @@ class LinkService : Service() {
     private var transport: ObdTransport? = null
     private var wake: PowerManager.WakeLock? = null
     private lateinit var gps: GpsDistance
+    private var gpsAllowed = true
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -61,21 +62,36 @@ class LinkService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_REFRESH) {
+            // The app came to the foreground: if we were started in the background (auto-connect),
+            // GPS wasn't allowed then — upgrade now.
+            if (job != null) {
+                promote("Windsor Dash")
+                if (!gps.running && Dash.state.value.status == LinkStatus.LIVE) startGps()
+            } else stopSelf()
+            return START_STICKY
+        }
         val ref = Dash.savedAdapter
         if (ref == null) {
             stopSelf(); return START_NOT_STICKY
         }
+        promote("Connecting to ${ref.name}…")
+        if (job == null || intent?.action != ACTION_AUTO) startLink(ref)
+        return START_STICKY
+    }
+
+    private fun promote(text: String) {
         val base = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
         val withGps = if (Build.VERSION.SDK_INT >= 29 && gps.hasPermission()) base or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else base
-        val n = buildNotification("Connecting to ${ref.name}…")
+        val n = buildNotification(text)
         try {
             ServiceCompat.startForeground(this, NOTIF_ID, n, withGps)
+            gpsAllowed = true
         } catch (e: Exception) {
-            // Location type refused (e.g. started from the car screen in the background): run without GPS.
+            // Location type refused (started in the background): run without GPS until the app is opened.
             ServiceCompat.startForeground(this, NOTIF_ID, n, base)
+            gpsAllowed = false
         }
-        startLink(ref)
-        return START_STICKY
     }
 
     private fun startLink(ref: AdapterRef) {
@@ -86,6 +102,7 @@ class LinkService : Service() {
 
         job = scope.launch {
             var attempt = 0
+            var failingSince = 0L
             while (isActive) {
                 try {
                     if (ref.kind == AdapterRef.Kind.DEMO) {
@@ -100,7 +117,7 @@ class LinkService : Service() {
                         val id = elm.init()
                         Dash.setStatus(LinkStatus.CONNECTING, "Adapter ok (${id.ifBlank { "ELM327" }}). Waking the car…")
                         if (!WindsorProfile.probe(elm)) error("No reply from the Windsor BMS — is the car switched on?")
-                        attempt = 0
+                        attempt = 0; failingSince = 0L
                         Dash.setStatus(LinkStatus.LIVE, "Live · ${ref.name}")
                         startGps()
                         WindsorProfile.poll(
@@ -129,6 +146,14 @@ class LinkService : Service() {
                     stopGps()
                     Dash.onDisconnected()
                     attempt++
+                    if (failingSince == 0L) failingSince = System.currentTimeMillis()
+                    // Give up after 30 min of no car (saves phone battery). A paused charge is kept
+                    // and filled in on the next connection.
+                    if (System.currentTimeMillis() - failingSince > 30 * 60_000L) {
+                        Dash.setStatus(LinkStatus.IDLE, "Stopped — car not reachable for 30 min")
+                        stopSelf()
+                        break
+                    }
                     val wait = minOf(30_000L, 3_000L * attempt)
                     Dash.setStatus(LinkStatus.RETRYING, "${friendly(e)} · retrying in ${wait / 1000}s")
                     delay(wait)
@@ -155,7 +180,7 @@ class LinkService : Service() {
     }
 
     private fun startGps() = scope.launch(Dispatchers.Main) {
-        Dash.setGpsOn(gps.start())
+        Dash.setGpsOn(gpsAllowed && gps.start())
     }
 
     private fun stopGps() = scope.launch(Dispatchers.Main) {
@@ -223,6 +248,8 @@ class LinkService : Service() {
         private const val CHANNEL = "link"
         private const val NOTIF_ID = 42
         const val ACTION_STOP = "stop"
+        const val ACTION_REFRESH = "refresh"
+        const val ACTION_AUTO = "auto"
 
         /** Returns false if Android refused to start the service from the background. */
         fun start(ctx: Context): Boolean = try {
@@ -230,6 +257,19 @@ class LinkService : Service() {
             true
         } catch (e: Exception) {
             false
+        }
+
+        /** From auto-connect: starts the link unless it's already running. */
+        fun startAuto(ctx: Context): Boolean = try {
+            ContextCompat.startForegroundService(ctx, Intent(ctx, LinkService::class.java).setAction(ACTION_AUTO))
+            true
+        } catch (e: Exception) {
+            false
+        }
+
+        /** App opened: let a background-started service turn GPS on. */
+        fun refresh(ctx: Context) {
+            runCatching { ctx.startService(Intent(ctx, LinkService::class.java).setAction(ACTION_REFRESH)) }
         }
 
         fun stop(ctx: Context) {

@@ -6,6 +6,13 @@ Live battery dashboard for the **MG Windsor EV (52.9 kWh)** over an ELM327 OBD-I
 - **Phone:** SoC, range, energy left, power (drive / regen / charge), pack V & A, trip efficiency, charging session, SoH, pack temperature, highest/lowest cell (with cell number) and spread, 12 V battery, odometer.
 - **Android Auto:** Live (SoC + range, power, trip, charging, battery), Charging (kW, kWh added, time to 80/90/100 %), Trip (Wh/km, kWh/100 km, regen, range).
 
+## Charging, alerts and auto-connect
+- **Gap fill:** if the car stops answering mid-charge (locked / asleep), the charge stays open. On reconnect the missing energy is taken from the BMS energy-left counter (now − at link loss) and the end SoC from the BMS, and the session is marked with a note. Nothing is interpolated.
+- **Alerts:** target SoC reached, charge finished, car stopped answering mid-charge (switchable).
+- **Auto-connect (Android 12+):** pick the car's Bluetooth (or a BLE dongle). Android's companion-device presence wakes the app when it connects, and the OBD link starts by itself. Started in the background, GPS distance begins once the app is opened (an Android rule). The link gives up after 30 min without the car.
+- **Cell watch:** tallies of the BMS's lowest / highest cell numbers at rest, under load (>10 kW), while charging and when full.
+- **Capacity (calc.):** energy left ÷ SoC, shown only at ≥ 80 % SoC.
+
 ## Measured vs estimated
 Every battery and cell figure is the BMS's own reading, shown as reported. Nothing is interpolated, and no per-cell voltages are made up. Only **range** and **charge time** are estimates, and both are labelled *est.*
 
