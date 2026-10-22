@@ -218,6 +218,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             val label = when {
                 kw == null -> "Power"
                 st.charging -> "Charging"
+                kw < -0.2 && st.parked -> "Charging (starting)"
                 kw < -0.2 -> "Regen"
                 else -> "Power"
             }

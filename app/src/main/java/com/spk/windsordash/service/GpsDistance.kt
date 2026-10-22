@@ -15,7 +15,11 @@ import androidx.core.content.ContextCompat
  * Measures distance driven from the phone's GPS (no Google services needed).
  * Filters out poor fixes, stationary jitter and impossible jumps.
  */
-class GpsDistance(private val ctx: Context, private val onMeters: (Double) -> Unit) {
+class GpsDistance(
+    private val ctx: Context,
+    private val onFix: (speedMps: Float?) -> Unit = {},
+    private val onMeters: (Double) -> Unit,
+) {
     private val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private var last: Location? = null
     var running = false
@@ -52,7 +56,10 @@ class GpsDistance(private val ctx: Context, private val onMeters: (Double) -> Un
     }
 
     private fun handle(loc: Location) {
-        if (!loc.hasAccuracy() || loc.accuracy > 25f) return
+        if (!loc.hasAccuracy()) return
+        // Speed is useful even from a rough fix (e.g. under a charging canopy).
+        if (loc.accuracy <= 60f) onFix(if (loc.hasSpeed()) loc.speed else null)
+        if (loc.accuracy > 25f) return
         lastFixAt = System.currentTimeMillis()
         val prev = last
         if (prev == null) { last = loc; return }

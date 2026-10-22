@@ -51,7 +51,7 @@ class LinkService : Service() {
         super.onCreate()
         Dash.init(this)
         createChannel()
-        gps = GpsDistance(this) { m -> Dash.onGpsMeters(m) }
+        gps = GpsDistance(this, onFix = { v -> Dash.onGpsFix(v) }) { m -> Dash.onGpsMeters(m) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

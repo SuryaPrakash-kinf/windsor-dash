@@ -71,6 +71,7 @@ data class DashState(
     val odoNote: String = "",
     val odoSpec: OdoSpec? = null,
     val gpsOn: Boolean = false,
+    val parked: Boolean = false,      // GPS reports ~0 speed right now
 ) {
     val hasData get() = sample.at > 0 && (status == LinkStatus.LIVE || status == LinkStatus.DEMO)
     val cellDeltaMv get() = sample.maxCellMv?.let { mx -> sample.minCellMv?.let { mx - it } }
@@ -100,6 +101,9 @@ object Dash {
     private var negSince = 0L
     private var posSince = 0L
     private var lastRealCharge: ChargeSession? = null
+    private var lastFixAt = 0L
+    private var lastFixSpeed: Float? = null
+    private var inflowWh = 0.0          // energy flowing in before we decided it's a charge
     private var lastOdo: Int? = null
     private var whSinceOdo = 0.0
     private var lastGpsAt = 0L
@@ -166,6 +170,12 @@ object Dash {
         prefs.edit().putString("odo_spec", spec?.encode()).apply()
         _state.update { it.copy(odoSpec = spec) }
         LocalLog.event(if (spec == null) "odometer location cleared" else "odometer location saved: ${spec.describe()}")
+    }
+
+    /** Every usable GPS fix: tells us whether the car is standing still. */
+    fun onGpsFix(speedMps: Float?) {
+        lastFixAt = System.currentTimeMillis()
+        lastFixSpeed = speedMps
     }
 
     fun setGpsOn(on: Boolean) = _state.update { it.copy(gpsOn = on) }
@@ -249,23 +259,40 @@ object Dash {
 
         val kw = if (s.packV != null && s.currentA != null) s.packV * s.currentA / 1000 else null
 
-        // Charging = current flowing in while the car is parked.
-        // With GPS: 20 s of inflow and no GPS movement for 30 s. Without GPS: 90 s of inflow
-        // (long downhill regen can last 20+ s, which is what fooled v0.3.2).
+        // Charging = current flowing in while the car is parked. Regen needs the car moving.
+        //  - GPS shows ~0 speed (fresh fix):        4 s of inflow is enough
+        //  - GPS on, no movement counted for 30 s:  20 s
+        //  - no GPS at all:                         90 s (long downhill regen can last 20+ s)
         val gpsOn = prev.gpsOn
         val movingNow = now - lastGpsAt < 30_000
+        val parked = now - lastFixAt < 10_000 && (lastFixSpeed ?: 99f) < 0.5f && now - lastGpsAt > 15_000
         var charging = prev.charging
         if (kw != null) {
             if (kw < -0.3) { if (negSince == 0L) negSince = now; posSince = 0 }
-            else if (kw > 0.3) { if (posSince == 0L) posSince = now; negSince = 0 }
+            else if (kw > 0.3) { if (posSince == 0L) posSince = now; negSince = 0; inflowWh = 0.0 }
             val inflowFor = if (negSince > 0) now - negSince else 0L
-            if (!charging && !movingNow && inflowFor > (if (gpsOn) 20_000 else 90_000)) charging = true
+            if (!charging && negSince > 0) {
+                val need = when {
+                    parked -> 4_000L
+                    gpsOn && !movingNow -> 20_000L
+                    !gpsOn -> 90_000L
+                    else -> Long.MAX_VALUE        // GPS says we're moving: it's regen
+                }
+                if (inflowFor > need) charging = true
+            }
             if (charging && posSince > 0 && now - posSince > 10_000) charging = false
             if (charging && movingNow) charging = false
         }
+        val justStarted = charging && !prev.charging
+        if (!charging && kw != null && kw < -0.3) inflowWh += -kw * 1000 * dtH
 
         // Trip
         var trip = prev.trip ?: Trip(now, s.odometerKm)
+        if (justStarted && inflowWh > 0) {
+            // The seconds before we recognised the charge were booked as regen: move them back.
+            trip = trip.copy(netWh = trip.netWh + inflowWh, regenWh = maxOf(0.0, trip.regenWh - inflowWh))
+            whSinceOdo += inflowWh
+        }
         if (trip.startOdoKm == null && s.odometerKm != null) trip = trip.copy(startOdoKm = s.odometerKm)
         if (kw != null && !charging) {
             val wh = kw * 1000 * dtH
@@ -302,7 +329,10 @@ object Dash {
         var chargeEnded: ChargeSession? = null
         var chargeDiscarded = false
         val charge: ChargeSession? = if (charging) {
-            val base = if (old == null || !old.active) ChargeSession(now, s.socPct) else old
+            val base = if (old == null || !old.active) {
+                ChargeSession(if (negSince > 0) negSince else now, s.socPct, addedKwh = inflowWh / 1000)
+            } else old
+            if (justStarted) inflowWh = 0.0
             if (kw != null && kw < 0) base.copy(addedKwh = base.addedKwh + (-kw) * dtH, peakKw = maxOf(base.peakKw, -kw)) else base
         } else if (old != null && old.active) {
             val ended = old.copy(endedAt = now, endSoc = s.socPct)
@@ -331,7 +361,7 @@ object Dash {
 
         _state.value = prev.copy(
             sample = s, powerKw = kw, charging = charging, trip = trip, charge = charge,
-            rangeKm = range, effWhKm = eff, effSource = src,
+            rangeKm = range, effWhKm = eff, effSource = src, parked = parked,
         )
         // Demo data must never touch the real odometer.
         if (prev.status != LinkStatus.DEMO && s.odometerKm != null &&
