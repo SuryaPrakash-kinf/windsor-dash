@@ -89,6 +89,18 @@ class MainActivity : ComponentActivity() {
     private val scanner = AdapterScanner()
     private var afterPermission: (() -> Unit)? = null
 
+    private val folderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            Thread {
+                LocalLog.useFolder(uri)
+                runOnUiThread { Toast.makeText(this, "Logs now go to ${LocalLog.destination()}", Toast.LENGTH_LONG).show() }
+            }.start()
+        }
+    }
+
+    /** Opens the system folder picker (Documents/WindsorDash is a good choice). */
+    fun chooseLogFolder() = folderLauncher.launch(null)
+
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         afterPermission?.invoke(); afterPermission = null
     }
@@ -413,46 +425,74 @@ private fun LogsPanel() {
     val ctx = LocalContext.current
     var on by remember { mutableStateOf(LocalLog.enabled) }
     var bytes by remember { mutableLongStateOf(LocalLog.totalBytes()) }
+    var dest by remember { mutableStateOf(LocalLog.destination()) }
+    var inFolder by remember { mutableStateOf(LocalLog.folderUri != null) }
+    var err by remember { mutableStateOf(LocalLog.folderError) }
     var confirmDelete by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { while (true) { bytes = LocalLog.totalBytes(); delay(5000) } }
+    LaunchedEffect(Unit) {
+        while (true) {
+            bytes = LocalLog.totalBytes(); dest = LocalLog.destination()
+            inFolder = LocalLog.folderUri != null; err = LocalLog.folderError
+            delay(2000)
+        }
+    }
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Local logs", color = Color.White, fontWeight = FontWeight.Medium)
-                Text(
-                    "${LocalLog.files().size} files · ${"%.1f".format(bytes / 1024.0)} KB · kept on this phone only",
-                    color = Dim, fontSize = 12.sp
-                )
+                Text("Writing to $dest · never uploaded", color = Dim, fontSize = 12.sp)
             }
             Switch(checked = on, onCheckedChange = { on = it; LocalLog.setEnabled(ctx, it) })
         }
+        err?.let {
+            Text("Couldn't write to the folder ($it) — saving to app storage meanwhile.", color = Amber, fontSize = 12.sp)
+        }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
-                val n = runCatching { LocalLog.saveToDownloads(ctx) }.getOrDefault(0)
-                val msg = when {
-                    n < 0 -> "Needs Android 10+ — use Share instead"
-                    n == 0 -> "No logs yet"
-                    else -> "Saved $n files to Downloads/WindsorDash"
-                }
-                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
-            }) { Text("Save to Downloads") }
-            OutlinedButton(onClick = {
-                LocalLog.flush()
-                val files = LocalLog.files()
-                if (files.isEmpty()) {
-                    Toast.makeText(ctx, "No logs yet", Toast.LENGTH_SHORT).show()
-                } else {
-                    val uris = ArrayList(files.map { FileProvider.getUriForFile(ctx, ctx.packageName + ".logs", it) })
-                    val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                        type = "text/csv"
-                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            OutlinedButton(onClick = { (ctx as? MainActivity)?.chooseLogFolder() }) {
+                Text(if (inFolder) "Change folder" else "Choose folder")
+            }
+            if (inFolder) TextButton(onClick = {
+                LocalLog.useAppStorage(); inFolder = false; dest = LocalLog.destination()
+            }) { Text("Use app storage") }
+        }
+        if (!inFolder) {
+            Text(
+                "${LocalLog.files().size} files · ${"%.1f".format(bytes / 1024.0)} KB in app storage",
+                color = Dim, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    val n = runCatching { LocalLog.saveToDownloads(ctx) }.getOrDefault(0)
+                    val msg = when {
+                        n < 0 -> "Needs Android 10+ — use Share instead"
+                        n == 0 -> "No logs yet"
+                        else -> "Saved $n files to Downloads/WindsorDash"
                     }
-                    ctx.startActivity(Intent.createChooser(send, "Share logs"))
-                }
-            }) { Text("Share") }
-            TextButton(onClick = { confirmDelete = true }) { Text("Delete", color = Red) }
+                    Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+                }) { Text("Save to Downloads") }
+                OutlinedButton(onClick = {
+                    LocalLog.flush()
+                    val files = LocalLog.files()
+                    if (files.isEmpty()) {
+                        Toast.makeText(ctx, "No logs yet", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val uris = ArrayList(files.map { FileProvider.getUriForFile(ctx, ctx.packageName + ".logs", it) })
+                        val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                            type = "text/csv"
+                            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        ctx.startActivity(Intent.createChooser(send, "Share logs"))
+                    }
+                }) { Text("Share") }
+                TextButton(onClick = { confirmDelete = true }) { Text("Delete", color = Red) }
+            }
+        } else {
+            Text(
+                "New rows are added to the files in that folder every few seconds. Open, copy or delete them with any file manager.",
+                color = Dim, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)
+            )
         }
         Text(
             "samples-<date>.csv: one row per reading · events.csv: connects, trips, charge sessions",
@@ -462,8 +502,8 @@ private fun LogsPanel() {
     if (confirmDelete) AlertDialog(
         onDismissRequest = { confirmDelete = false },
         containerColor = Card,
-        title = { Text("Delete all logs?") },
-        text = { Text("Copies already saved to Downloads are not touched.") },
+        title = { Text("Delete app-storage logs?") },
+        text = { Text("Copies already saved to Downloads or a chosen folder are not touched.") },
         confirmButton = {
             TextButton(onClick = {
                 LocalLog.deleteAll(); bytes = 0; confirmDelete = false

@@ -14,7 +14,9 @@ The app makes no network calls except to a Wi-Fi OBD dongle. It has no analytics
 - `samples-YYYY-MM-DD.csv`: one row per reading (SoC, SoH, energy left, V, A, kW, max/min cell mV with cell numbers, spread, pack temp, 12 V, odometer). A blank cell means it wasn't read.
 - `events.csv`: connects and disconnects, charge sessions (SoC from → to, kWh added, peak kW, minutes) and trip resets.
 
-From the Logs panel: **Save to Downloads** (copies to `Download/WindsorDash`), **Share**, **Delete**, or switch logging off. Demo mode is never logged.
+**Write straight to a folder:** tap **Choose folder** and pick (or create) a folder such as `Documents/WindsorDash`. From then on the app appends rows to the CSV files there every few seconds, and existing logs are copied over. If the folder becomes unavailable, it falls back to app storage so no readings are lost.
+
+In app-storage mode the Logs panel also offers **Save to Downloads** (copies to `Download/WindsorDash`), **Share**, **Delete**, or switch logging off. Demo mode is never logged.
 
 ## Odometer
 EVDS (and v0.1 of this app) ask for the odometer at ECU 744/74C, DID B921. That address is copied from the MG ZS EV profile. The Windsor is a different platform (Wuling Cloud EV) with its own ECUs, so it usually gets no answer there.
