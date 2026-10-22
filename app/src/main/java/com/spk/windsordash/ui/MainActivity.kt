@@ -438,6 +438,16 @@ private fun OdometerPanel(st: DashState) {
             Text(tag, color = col, fontSize = 12.sp)
         }
         Text(st.odoNote, color = Dim, fontSize = 12.sp)
+        st.offlineDriveKwh?.let { kwh ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "The battery used %.1f kWh (≈ %.0f km) while the app wasn't connected — update the odometer?"
+                        .format(kwh, kwh * 1000 / (st.effWhKm ?: 130.0)),
+                    color = Amber, fontSize = 12.sp, modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { Dash.dismissOfflineDrive() }) { Text("Dismiss") }
+            }
+        }
         if (!st.gpsOn && st.status == LinkStatus.LIVE) {
             Text("GPS is off — allow Location for Windsor Dash to count distance.", color = Amber, fontSize = 12.sp)
         }

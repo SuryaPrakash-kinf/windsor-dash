@@ -49,6 +49,11 @@ object Alerts {
         )
     }
 
+    fun offlineCharge(soc0: Double, soc1: Double, kwh: Double) = post(
+        104, "Charge found: ${soc0.toInt()} → ${soc1.toInt()}%",
+        "+%.1f kWh while the dongle was disconnected. Added to the charging log as Home AC — edit it if that's wrong.".format(kwh)
+    )
+
     fun linkPausedWhileCharging() = post(
         103, "Car stopped answering while charging",
         "Probably locked or asleep. Charging continues; the totals are filled in from the battery when you reconnect."

@@ -151,9 +151,11 @@ fun ChargesScreen(onBack: () -> Unit) {
             "${list.size} charges · ₹%.0f spent".format(paid) + (if (kwh > 0) " · avg ₹%.2f/kWh".format(paid / kwh) else ""),
             color = Dim, fontSize = 13.sp
         )
+        HomeTariffLine()
         Text(
-            "Charges the app detects are added automatically with what the car measured. Tap one to add the cost, " +
-                "charger type and station. Use + Add for charges when the dongle wasn't connected.",
+            "Charges are added automatically: live ones with what the car measured, and ones done while the dongle " +
+                "was unplugged are found on the next connection from the battery's energy counter. Tap one to add " +
+                "the cost, charger type or station. + Add is for anything the app couldn't see.",
             color = Dim, fontSize = 12.sp
         )
         for (c in list) {
@@ -221,7 +223,13 @@ private fun ChargeEditor(entry: ChargeEntry, onCancel: () -> Unit, onSave: (Char
         Text("Charger", color = Dim, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for (t in listOf(ChargerType.HOME_AC, ChargerType.PUBLIC_AC, ChargerType.DC_FAST))
-                FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t.label) })
+                FilterChip(selected = type == t, onClick = {
+                    type = t
+                    // Home charging: fill the cost from your home tariff if it's empty.
+                    val tariff = Dash.homeTariff
+                    val kwh = billed.toDoubleOrNull() ?: entry.kwhBattery
+                    if (t == ChargerType.HOME_AC && cost.isBlank() && tariff != null && kwh != null) cost = "%.0f".format(Locale.US, tariff * kwh)
+                }, label = { Text(t.label) })
         }
         Field("Start (yyyy-MM-dd HH:mm)", start) { start = it }
         Field("End (optional)", end) { end = it }
@@ -278,4 +286,34 @@ private fun Field(label: String, value: String, number: Boolean = false, onChang
         modifier = Modifier.fillMaxWidth(),
         keyboardOptions = if (number) KeyboardOptions(keyboardType = KeyboardType.Decimal) else KeyboardOptions.Default,
     )
+}
+
+
+@Composable
+private fun HomeTariffLine() {
+    var editing by remember { mutableStateOf(false) }
+    var tariff by remember { mutableStateOf(Dash.homeTariff) }
+    Text(
+        "Home tariff: " + (tariff?.let { if (it == 0.0) "₹0/kWh (solar)" else "₹%.2f/kWh".format(it) } ?: "not set") + "  ·  edit",
+        color = Teal, fontSize = 13.sp, modifier = Modifier.clickable { editing = true }
+    )
+    if (editing) {
+        var text by remember { mutableStateOf(tariff?.let { "%.2f".format(Locale.US, it) } ?: "") }
+        AlertDialog(
+            onDismissRequest = { editing = false }, containerColor = Card,
+            title = { Text("Home tariff") },
+            text = {
+                Column {
+                    Text("₹ per kWh for charging at home. 0 if it's solar. Used for Home AC charges; shown as calculated.",
+                        color = Dim, fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Field("₹ / kWh", text, number = true) { text = it.filter { c -> c.isDigit() || c == '.' }.take(6) }
+                }
+            },
+            confirmButton = { TextButton(onClick = {
+                val v = text.toDoubleOrNull(); Dash.homeTariff = v; tariff = v; editing = false
+            }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel") } },
+        )
+    }
 }

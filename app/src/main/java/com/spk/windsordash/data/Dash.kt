@@ -107,6 +107,8 @@ data class DashState(
     val parked: Boolean = false,      // GPS reports ~0 speed right now
     val speedKmh: Double? = null,     // GPS speed (good fixes only)
     val run: Run? = null,             // drive in progress
+    /** kWh the battery lost while the app wasn't connected (likely a drive without the dongle). */
+    val offlineDriveKwh: Double? = null,
 ) {
     val hasData get() = sample.at > 0 && (status == LinkStatus.LIVE || status == LinkStatus.DEMO)
     /** Energy left ÷ SoC, only at ≥ 80 % SoC where the 1 % rounding matters least. Calculated, not a BMS value. */
@@ -147,6 +149,8 @@ object Dash {
     private var lastFixSpeed: Float? = null
     private var inflowWh = 0.0          // energy flowing in before we decided it's a charge
     private var paused: PausedCharge? = null
+    private var offlineChecked = false
+    private var lastSeenSaved = 0L
     private var targetAlerted = false
     private val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
     private var lastOdo: Int? = null
@@ -169,9 +173,61 @@ object Dash {
         }
         refreshOdo(null)
         paused = PausedCharge.decode(prefs.getString("paused_charge", null))
+        if (!prefs.contains("home_tariff")) prefs.edit().putFloat("home_tariff", 0f).apply()   // solar at home
         Alerts.init(ctx.applicationContext)
         CellWatch.init(ctx.applicationContext)
     }
+
+    /** The battery's state the last time we could read it — compared on the next connection. */
+    private fun saveLastSeen(s: Sample) {
+        val soc = s.socPct ?: return
+        val e = s.energyLeftKwh ?: return
+        lastSeenSaved = s.at
+        prefs.edit().putLong("ls_at", s.at).putFloat("ls_soc", soc.toFloat()).putFloat("ls_e", e.toFloat()).apply()
+    }
+
+    /**
+     * First reading after connecting: did the battery change while we weren't watching?
+     * Up by ≥ 2 % and ≥ 1 kWh → a charge happened (logged as "found after the fact").
+     * Down by ≥ 1 kWh → probably a drive without the dongle (odometer hint).
+     */
+    private fun checkWhileAway(s: Sample) {
+        val soc = s.socPct ?: return
+        val e = s.energyLeftKwh ?: return
+        offlineChecked = true
+        val at = prefs.getLong("ls_at", 0L)
+        if (at == 0L || s.at - at < 5 * 60_000L) return
+        val soc0 = prefs.getFloat("ls_soc", -1f).toDouble()
+        val e0 = prefs.getFloat("ls_e", -1f).toDouble()
+        if (soc0 < 0 || e0 < 0) return
+        val dE = e - e0
+        val dSoc = soc - soc0
+        if (dE >= 1.0 && dSoc >= 2) {
+            val tariff = homeTariff
+            val entry = ChargeEntry(
+                id = at + 1, start = at, end = s.at, type = ChargerType.HOME_AC,
+                socStart = soc0.toInt(), socEnd = soc.toInt(), kwhBattery = dE,
+                costInr = tariff?.let { it * dE }, odometerKm = _state.value.odoKm?.toInt(), auto = true,
+                notes = "Found after the fact: charged while the dongle was disconnected, between " +
+                    "${hm.format(Date(at))} and ${hm.format(Date(s.at))}. kWh is the battery's own energy counter; " +
+                    "if you also drove in between, the real charge was larger." +
+                    (tariff?.let { " Cost calculated at home tariff ₹%.2f/kWh.".format(it) } ?: ""),
+            )
+            Thread { runCatching { ChargeLog.upsert(entry) } }.start()
+            LocalLog.event("charge found while disconnected: %.0f→%.0f%%, +%.1f kWh".format(soc0, soc, dE))
+            Alerts.offlineCharge(soc0, soc, dE)
+        } else if (dE <= -1.0) {
+            _state.update { it.copy(offlineDriveKwh = -dE) }
+            LocalLog.event("battery used while disconnected: %.1f kWh (%.0f→%.0f%%)".format(-dE, soc0, soc))
+        }
+    }
+
+    /** Home charging cost per kWh (null = not set). Solar at home → 0. */
+    var homeTariff: Double?
+        get() = prefs.getFloat("home_tariff", -1f).takeIf { it >= 0 }?.toDouble()
+        set(v) { prefs.edit().apply { if (v == null) remove("home_tariff") else putFloat("home_tariff", v.toFloat()) }.apply() }
+
+    fun dismissOfflineDrive() = _state.update { it.copy(offlineDriveKwh = null) }
 
     private fun setPaused(p: PausedCharge?) {
         paused = p
@@ -263,6 +319,7 @@ object Dash {
             .putString("odo_base_src", "owner").putFloat("odo_gps", 0f).apply()
         gpsUnsaved = 0.0
         LocalLog.event("odometer set by owner: $km km")
+        _state.update { it.copy(offlineDriveKwh = null) }
         refreshOdo(null)
     }
 
@@ -375,6 +432,11 @@ object Dash {
 
     @Synchronized
     fun onSample(s: Sample) {
+        if (_state.value.status == LinkStatus.LIVE) {
+            // A charge cut off mid-way is handled by the gap fill instead — don't count it twice.
+            if (!offlineChecked) { if (paused == null) checkWhileAway(s) else offlineChecked = true }
+            if (s.at - lastSeenSaved > 60_000) saveLastSeen(s)
+        }
         if (paused != null && _state.value.status != LinkStatus.DEMO) {
             val k = if (s.packV != null && s.currentA != null) s.packV * s.currentA / 1000 else null
             resolvePaused(s, k, s.at)
@@ -537,6 +599,8 @@ object Dash {
 
     fun onDisconnected() {
         finishRun(_state.value.run)
+        if (_state.value.status == LinkStatus.LIVE) saveLastSeen(_state.value.sample)
+        offlineChecked = false
         lastAt = 0; negSince = 0; posSince = 0
         val st0 = _state.value
         val c0 = st0.charge
