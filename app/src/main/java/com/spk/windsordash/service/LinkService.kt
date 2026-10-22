@@ -120,7 +120,7 @@ class LinkService : Service() {
                     Dash.onDisconnected()
                     attempt++
                     val wait = minOf(30_000L, 3_000L * attempt)
-                    Dash.setStatus(LinkStatus.RETRYING, "${e.message ?: "Link error"} · retrying in ${wait / 1000}s")
+                    Dash.setStatus(LinkStatus.RETRYING, "${friendly(e)} · retrying in ${wait / 1000}s")
                     delay(wait)
                 } finally {
                     transport?.close()
@@ -150,6 +150,19 @@ class LinkService : Service() {
 
     private fun stopGps() = scope.launch(Dispatchers.Main) {
         gps.stop(); Dash.setGpsOn(false)
+    }
+
+    /** Turns raw Bluetooth/socket errors into something readable. */
+    private fun friendly(e: Exception): String {
+        val m = e.message.orEmpty()
+        return when {
+            m.contains("socket", true) || m.contains("read failed", true) || m.contains("closed", true) ->
+                "Adapter link dropped (car switched off or out of range?)"
+            m.contains("timeout", true) || m.contains("Timed out", true) -> "Adapter didn't answer in time"
+            m.contains("stopped answering", true) -> "Car stopped answering (switched off?)"
+            m.isBlank() -> "Link error"
+            else -> m
+        }
     }
 
     private fun stopLink() {

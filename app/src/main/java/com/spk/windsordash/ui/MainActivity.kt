@@ -167,6 +167,16 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             color = Teal, fontSize = 13.sp, modifier = Modifier.clickable(onClick = onPick)
         )
 
+        // Not live: say so, so old numbers aren't mistaken for current ones
+        if (!st.hasData && s.at > 0) {
+            Text(
+                "Not live — showing the last reading from " +
+                    java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(s.at)),
+                color = Amber, fontSize = 13.sp,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(0x22FBBF24)).padding(10.dp)
+            )
+        }
+
         // Hero: SoC + range
         Panel {
             Row(verticalAlignment = Alignment.Bottom) {
@@ -192,7 +202,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
 
         // Power
         Panel {
-            val kw = st.powerKw
+            val kw = if (st.hasData) st.powerKw else null   // power is instantaneous: blank when not live
             val label = when {
                 kw == null -> "Power"
                 st.charging -> "Charging"
@@ -207,7 +217,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     Text(s.packV?.let { "%.0f V".format(it) } ?: "– V", color = Color.White, fontFamily = FontFamily.Monospace)
-                    Text(s.currentA?.let { "%.1f A".format(it) } ?: "– A", color = Color.White, fontFamily = FontFamily.Monospace)
+                    Text(s.currentA?.takeIf { st.hasData }?.let { "%.1f A".format(it) } ?: "– A", color = Color.White, fontFamily = FontFamily.Monospace)
                 }
             }
         }

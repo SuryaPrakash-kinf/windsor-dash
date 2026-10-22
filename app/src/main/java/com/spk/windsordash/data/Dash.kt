@@ -99,6 +99,7 @@ object Dash {
     private var lastAt = 0L
     private var negSince = 0L
     private var posSince = 0L
+    private var lastRealCharge: ChargeSession? = null
     private var lastOdo: Int? = null
     private var whSinceOdo = 0.0
     private var lastGpsAt = 0L
@@ -248,13 +249,19 @@ object Dash {
 
         val kw = if (s.packV != null && s.currentA != null) s.packV * s.currentA / 1000 else null
 
-        // Charging = current flowing in for 20 s straight (regen bursts are shorter).
+        // Charging = current flowing in while the car is parked.
+        // With GPS: 20 s of inflow and no GPS movement for 30 s. Without GPS: 90 s of inflow
+        // (long downhill regen can last 20+ s, which is what fooled v0.3.2).
+        val gpsOn = prev.gpsOn
+        val movingNow = now - lastGpsAt < 30_000
         var charging = prev.charging
         if (kw != null) {
             if (kw < -0.3) { if (negSince == 0L) negSince = now; posSince = 0 }
             else if (kw > 0.3) { if (posSince == 0L) posSince = now; negSince = 0 }
-            if (!charging && negSince > 0 && now - negSince > 20_000) charging = true
+            val inflowFor = if (negSince > 0) now - negSince else 0L
+            if (!charging && !movingNow && inflowFor > (if (gpsOn) 20_000 else 90_000)) charging = true
             if (charging && posSince > 0 && now - posSince > 10_000) charging = false
+            if (charging && movingNow) charging = false
         }
 
         // Trip
@@ -292,11 +299,22 @@ object Dash {
 
         // Charge session
         val old = prev.charge
+        var chargeEnded: ChargeSession? = null
+        var chargeDiscarded = false
         val charge: ChargeSession? = if (charging) {
             val base = if (old == null || !old.active) ChargeSession(now, s.socPct) else old
-            if (kw != null) base.copy(addedKwh = base.addedKwh + (-kw) * dtH, peakKw = maxOf(base.peakKw, -kw)) else base
+            if (kw != null && kw < 0) base.copy(addedKwh = base.addedKwh + (-kw) * dtH, peakKw = maxOf(base.peakKw, -kw)) else base
         } else if (old != null && old.active) {
-            old.copy(endedAt = now, endSoc = s.socPct)
+            val ended = old.copy(endedAt = now, endSoc = s.socPct)
+            // Too small or too short to be a real charge: forget it, keep the previous real one.
+            if (ended.addedKwh < 0.1 || now - ended.startedAt < 60_000) {
+                chargeDiscarded = true
+                lastRealCharge
+            } else {
+                chargeEnded = ended
+                lastRealCharge = ended
+                ended
+            }
         } else old
 
         // Range
@@ -325,7 +343,8 @@ object Dash {
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
             if (charge != null && charge.active && (old == null || !old.active)) LocalLog.event("charging started at ${s.socPct?.toInt() ?: "?"}%")
-            if (charge != null && !charge.active && old != null && old.active) logCharge(charge, "charging ended")
+            chargeEnded?.let { logCharge(it, "charging ended") }
+            if (chargeDiscarded) LocalLog.event("ignored a very short inflow (regen, not a charge)")
         }
     }
 
@@ -333,13 +352,18 @@ object Dash {
         lastAt = 0; negSince = 0; posSince = 0
         val st0 = _state.value
         val c0 = st0.charge
-        if (st0.status != LinkStatus.DEMO && c0 != null && c0.active) {
-            logCharge(c0.copy(endedAt = System.currentTimeMillis(), endSoc = st0.sample.socPct), "charging ended (link lost)")
+        var keep: ChargeSession? = c0
+        if (c0 != null && c0.active) {
+            val now = System.currentTimeMillis()
+            val ended = c0.copy(endedAt = now, endSoc = st0.sample.socPct)
+            if (ended.addedKwh < 0.1 || now - ended.startedAt < 60_000) {
+                keep = lastRealCharge
+            } else {
+                keep = ended; lastRealCharge = ended
+                if (st0.status != LinkStatus.DEMO) logCharge(ended, "charging ended (link lost)")
+            }
         }
-        _state.update { st ->
-            val c = st.charge
-            st.copy(charge = if (c != null && c.active) c.copy(endedAt = System.currentTimeMillis()) else c, charging = false)
-        }
+        _state.update { it.copy(charge = keep, charging = false) }
         if (gpsUnsaved > 0) {
             prefs.edit().putFloat("odo_gps", prefs.getFloat("odo_gps", 0f) + gpsUnsaved.toFloat()).apply()
             gpsUnsaved = 0.0
