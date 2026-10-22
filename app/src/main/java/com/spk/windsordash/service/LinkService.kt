@@ -107,8 +107,14 @@ class LinkService : Service() {
                             elm,
                             odoSpec = { Dash.state.value.odoSpec },
                             between = {
-                                val found = OdoFinder.runIfPending(elm)
-                                if (found != null && found.confident) Dash.saveOdoSpec(found.spec)
+                                // Background odometer search: a few requests per cycle, never fatal to the link.
+                                try {
+                                    OdoFinder.step(elm, Dash.state.value.odoKm)?.let { Dash.saveOdoSpec(it) }
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    elm.forgetTarget()
+                                }
                             },
                             research = { com.spk.windsordash.data.LocalLog.research },
                             onRaw = { reads ->
@@ -121,7 +127,6 @@ class LinkService : Service() {
                     throw e
                 } catch (e: Exception) {
                     stopGps()
-                    if (OdoFinder.state.value.running) OdoFinder.cancel()
                     Dash.onDisconnected()
                     attempt++
                     val wait = minOf(30_000L, 3_000L * attempt)

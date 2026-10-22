@@ -1,7 +1,7 @@
 package com.spk.windsordash.obd
 
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
+import android.content.Context
+import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.abs
@@ -49,10 +49,29 @@ data class OdoSpec(
     }
 }
 
-data class OdoMatch(val spec: OdoSpec, val valueKm: Double, val dashKm: Int) {
-    val diff get() = abs(valueKm - dashKm)
-    /** 3–4 byte fields that match tightly are very unlikely to be coincidence. */
-    val confident get() = spec.width >= 3 && diff <= 2
+/**
+ * A value that matched the odometer once. It's only trusted after it has gone up by the same
+ * distance GPS measured (so a coincidental number can't be mistaken for the odometer).
+ */
+data class OdoMatch(
+    val spec: OdoSpec,
+    val valueKm: Double,          // value when first matched
+    val atOdoKm: Double,          // app odometer (dashboard + GPS) at that moment
+    val latestKm: Double = valueKm,
+    val latestOdoKm: Double = atOdoKm,
+    val confirmed: Boolean = false,
+) {
+    val diff get() = abs(valueKm - atOdoKm)
+    val strong get() = spec.width >= 3 && diff <= 2
+    fun encode() = listOf(spec.encode().replace('|', ';'), valueKm, atOdoKm, latestKm, latestOdoKm, if (confirmed) 1 else 0).joinToString("|")
+
+    companion object {
+        fun decode(s: String): OdoMatch? = runCatching {
+            val p = s.split('|')
+            OdoMatch(OdoSpec.decodeSpec(p[0].replace(';', '|'))!!, p[1].toDouble(), p[2].toDouble(),
+                p[3].toDouble(), p[4].toDouble(), p[5] == "1")
+        }.getOrNull()
+    }
 }
 
 data class FinderState(
@@ -65,126 +84,173 @@ data class FinderState(
 )
 
 /**
- * Searches the car for a value equal to the dashboard odometer.
- * Read-only: uses only UDS 0x3E (tester present), 0x22 (read data) and OBD mode 01.
+ * Background odometer search. Runs a few requests per poll cycle, so live readings continue,
+ * and keeps its progress across connections. Read-only: UDS 0x3E (tester present),
+ * 0x22 (read data) and OBD mode 01 only.
+ *
+ * Stages: 0 standard OBD 01A6 · 1 find ECUs · 2 likely DIDs on every ECU · 3 full DID ranges.
  */
 object OdoFinder {
     private val _state = MutableStateFlow(FinderState())
     val state: StateFlow<FinderState> = _state
+    private lateinit var prefs: SharedPreferences
 
-    @Volatile private var pendingKm: Int? = null
-    @Volatile var cancelled = false
-        private set
-
-    fun request(dashKm: Int) {
-        cancelled = false
-        pendingKm = dashKm
-        _state.value = FinderState(running = true, text = "Starting — keep the car switched on and parked…")
-    }
-
-    fun cancel() {
-        cancelled = true
-        pendingKm = null
-        if (_state.value.running) _state.value = _state.value.copy(running = false, finished = true, text = "Stopped")
-    }
-
-    fun dismiss() { _state.value = FinderState() }
-
-    /** Called by the poll loop between cycles. Returns the best match (or null). */
-    suspend fun runIfPending(elm: Elm327): OdoMatch? {
-        val km = pendingKm ?: return null
-        pendingKm = null
-        return try {
-            scan(elm, km)
-        } finally {
-            // Restore normal polling setup
-            elm.query("ATH0", 300)
-            elm.query("ATAT1", 300)
-            elm.query("ATST32", 300)
-            elm.forgetTarget()
-        }
-    }
-
-    private fun set(f: FinderState.() -> FinderState) { _state.value = _state.value.f() }
-
-    // DID ranges to try on each ECU (≈1,300 reads per ECU).
     private val DID_RANGES: List<IntRange> = listOf(
         0xDD00..0xDDFF,   // common "vehicle info" block on GM / SAIC-GM-Wuling ECUs
         0xB900..0xB9FF,   // MG/SAIC ZS-era cluster block (EVDS's B921)
         0xE100..0xE1FF,
-        0xD000..0xD0FF,   // Windsor BMS uses D0xx
+        0xD000..0xD0FF,
         0x0100..0x01FF,
+        0xF100..0xF1FF,
     )
-    private val QUICK_DIDS = listOf(0xDD01, 0xB921, 0xE101, 0xF1A6, 0x0101, 0x2001, 0xD001, 0xA001)
+    private val QUICK_DIDS = listOf(0xDD01, 0xB921, 0xE101, 0xF1A6, 0x0101, 0x2001, 0xD001, 0xA001, 0xF190, 0x0100)
+    private val ALL_DIDS: List<Int> by lazy { DID_RANGES.flatMap { it.toList() }.filterNot { it in QUICK_DIDS } }
+    private val DISCOVER_IDS = (0x700..0x7F7).filter { it != 0x7DF && it !in 0x7E8..0x7EF }
 
-    private suspend fun scan(elm: Elm327, dashKm: Int): OdoMatch? {
-        val matches = mutableListOf<OdoMatch>()
-        fun addMatches(tx: String, rx: String, did: String, p: IntArray) {
-            for (m in findIn(p, dashKm)) {
-                val spec = m.copy(tx = tx, rx = rx, did = did, need = p.size)
-                matches += OdoMatch(spec, spec.decode(p) ?: continue, dashKm)
-            }
-            if (matches.isNotEmpty()) set { copy(matches = matches.sortedWith(rank).take(10)) }
-        }
+    private const val PER_STEP_DIDS = 8
+    private const val PER_STEP_IDS = 4
 
-        // Faster timeouts while scanning (25 × 4 ms = 100 ms)
-        elm.query("ATAT0", 300)
-        elm.query("ATST19", 300)
+    // persisted progress
+    private var active = false
+    private var stage = 0
+    private var discIdx = 0
+    private var ecus = mutableListOf<Pair<String, String>>()
+    private var ecuIdx = 0
+    private var didIdx = 0
+    private var cands = mutableListOf<OdoMatch>()
+    private var stepCount = 0L
 
-        // 1) Standard OBD odometer (PID A6)
-        set { copy(text = "Trying the standard OBD odometer…", progress = 0.01f) }
-        elm.query("ATSH7DF", 300)
-        elm.query("ATCRA7E8", 300)
-        Elm327.payloadAfter(elm.query("01A6", 500), "41A6")?.let { p ->
-            if (p.size >= 4) addMatches("7DF", "7E8", "01A6", p.copyOf(4))
-        }
-        best(matches)?.takeIf { it.confident }?.let { return finish(it, matches) }
-
-        // 2) Which ECUs answer?
-        val ecus = discover(elm)
-        set { copy(ecus = ecus.map { "${it.first}→${it.second}" }) }
-        if (ecus.isEmpty()) {
-            set { copy(running = false, finished = true, text = "No ECUs answered. Is the car switched on (READY)?") }
-            return null
-        }
-
-        // Battery ECU last — least likely to hold the odometer.
-        val ordered = ecus.sortedBy { if (it.first == "742") 1 else 0 }
-        val perEcu = QUICK_DIDS.size + DID_RANGES.sumOf { it.count() }
-        val total = (perEcu * ordered.size).toFloat()
-        var done = 0
-
-        elm.query("ATH0", 300)
-        for ((tx, rx) in ordered) {
-            elm.query("ATSH$tx", 300)
-            elm.query("ATCRA$rx", 300)
-            val dids = QUICK_DIDS + DID_RANGES.flatMap { it.toList() }.filterNot { it in QUICK_DIDS }
-            for (d in dids) {
-                currentCoroutineContext().ensureActive()
-                if (cancelled) return finish(best(matches), matches, stopped = true)
-                val did = "%04X".format(d)
-                val resp = elm.query("22$did", 250)
-                Elm327.payloadAfter(resp, "62$did")?.let { if (it.isNotEmpty()) addMatches(tx, rx, did, it) }
-                done++
-                if (done % 16 == 0) set {
-                    copy(progress = 0.1f + 0.9f * done / total, text = "ECU $tx · DID $did · ${matches.size} candidate(s)")
-                }
-            }
-            best(matches)?.takeIf { it.confident }?.let { return finish(it, matches) }
-        }
-        return finish(best(matches), matches)
+    fun init(ctx: Context) {
+        if (::prefs.isInitialized) return
+        prefs = ctx.applicationContext.getSharedPreferences("odofinder", Context.MODE_PRIVATE)
+        active = prefs.getBoolean("active", false)
+        stage = prefs.getInt("stage", 0)
+        discIdx = prefs.getInt("disc", 0)
+        ecus = prefs.getString("ecus", "").orEmpty().split(',').filter { it.contains(':') }
+            .map { it.substringBefore(':') to it.substringAfter(':') }.toMutableList()
+        ecuIdx = prefs.getInt("ecu", 0)
+        didIdx = prefs.getInt("did", 0)
+        cands = prefs.getString("cands", "").orEmpty().split('\n').mapNotNull { if (it.isBlank()) null else OdoMatch.decode(it) }.toMutableList()
+        publish(if (active) "Paused — continues when the car is connected" else "")
     }
 
-    /** Sends tester-present to every 11-bit diagnostic id and records who replies. */
-    private suspend fun discover(elm: Elm327): List<Pair<String, String>> {
-        val found = linkedMapOf<String, String>()
+    private fun save() {
+        prefs.edit().putBoolean("active", active).putInt("stage", stage).putInt("disc", discIdx)
+            .putString("ecus", ecus.joinToString(",") { "${it.first}:${it.second}" })
+            .putInt("ecu", ecuIdx).putInt("did", didIdx)
+            .putString("cands", cands.joinToString("\n") { it.encode() }).apply()
+    }
+
+    /** Start (or restart) a search. The dashboard value must already be set as the app odometer. */
+    fun start() {
+        active = true; stage = 0; discIdx = 0; ecus.clear(); ecuIdx = 0; didIdx = 0; cands.clear()
+        save()
+        publish("Starting — runs in the background while you drive or charge")
+    }
+
+    fun cancel() {
+        active = false
+        save()
+        _state.value = _state.value.copy(running = false, finished = true, text = "Stopped. Progress is kept until you start a new search.")
+    }
+
+    fun dismiss() { _state.value = FinderState() }
+
+    private fun progress(): Float {
+        val perEcu = QUICK_DIDS.size + ALL_DIDS.size
+        return when (stage) {
+            0 -> 0f
+            1 -> 0.05f * discIdx / DISCOVER_IDS.size
+            2 -> 0.05f + 0.05f * ecuIdx / maxOf(1, ecus.size)
+            3 -> 0.10f + 0.90f * (ecuIdx * perEcu + didIdx).toFloat() / maxOf(1, ecus.size * perEcu)
+            else -> 1f
+        }.coerceIn(0f, 1f)
+    }
+
+    private fun publish(text: String, finished: Boolean = false) {
+        _state.value = FinderState(
+            running = active, text = text, progress = progress(),
+            ecus = ecus.map { "${it.first}→${it.second}" },
+            matches = cands.sortedWith(compareByDescending<OdoMatch> { it.confirmed }.thenByDescending { it.strong }.thenBy { it.diff }).take(10),
+            finished = finished,
+        )
+    }
+
+    /**
+     * One small chunk of work, called between poll cycles.
+     * [odoKm] = the app's odometer right now (dashboard reading + GPS since).
+     * Returns a spec once one is confirmed by driving.
+     */
+    suspend fun step(elm: Elm327, odoKm: Double?): OdoSpec? {
+        if (!active || odoKm == null) return null
+        stepCount++
+        try {
+            // Every ~40 steps, re-read candidates to see whether they track the GPS distance.
+            if (cands.isNotEmpty() && stepCount % 40 == 0L) checkCandidates(elm, odoKm)?.let { return it }
+
+            when (stage) {
+                0 -> {
+                    elm.query("ATSH7DF", 300); elm.query("ATCRA7E8", 300)
+                    Elm327.payloadAfter(elm.query("01A6", 500), "41A6")?.let { p ->
+                        if (p.size >= 4) consider(OdoSpec("7DF", "7E8", "01A6", 4, 0, 4, 1).let { it }, p.copyOf(4), odoKm)
+                    }
+                    stage = 1
+                    publish("Looking for the car's computers…")
+                }
+                1 -> {
+                    discover(elm)
+                    if (discIdx >= DISCOVER_IDS.size) {
+                        stage = 2; ecuIdx = 0
+                        if (ecus.isEmpty()) {
+                            active = false
+                            publish("No computers answered. Try again with the car switched on (READY).", finished = true)
+                        } else publish("Found ${ecus.size} computers. Checking likely places first…")
+                    } else publish("Looking for the car's computers… ${ecus.size} found so far")
+                }
+                2 -> {
+                    val (tx, rx) = ecus[ecuIdx]
+                    scanDids(elm, tx, rx, QUICK_DIDS, odoKm)
+                    ecuIdx++
+                    if (ecuIdx >= ecus.size) { stage = 3; ecuIdx = 0; didIdx = 0 }
+                    publish(status())
+                }
+                3 -> {
+                    val (tx, rx) = ecus[ecuIdx]
+                    val end = minOf(didIdx + PER_STEP_DIDS, ALL_DIDS.size)
+                    scanDids(elm, tx, rx, ALL_DIDS.subList(didIdx, end), odoKm)
+                    didIdx = end
+                    if (didIdx >= ALL_DIDS.size) { ecuIdx++; didIdx = 0 }
+                    if (ecuIdx >= ecus.size) {
+                        stage = 4
+                        if (cands.isEmpty()) {
+                            active = false
+                            publish("Searched every computer — no odometer value found. GPS keeps tracking it.", finished = true)
+                        } else publish("Search done. Waiting to confirm ${cands.size} candidate(s) — keep driving.")
+                    } else if (stepCount % 4 == 0L) publish(status())
+                }
+                else -> if (stepCount % 20 == 0L) publish("Waiting to confirm ${cands.size} candidate(s) — keep driving.")
+            }
+        } finally {
+            elm.query("ATH0", 300)
+            elm.forgetTarget()
+            if (stepCount % 10 == 0L) save()
+        }
+        return null
+    }
+
+    private fun status(): String {
+        val ecu = ecus.getOrNull(ecuIdx)?.first ?: "–"
+        val pct = (progress() * 100).toInt()
+        val c = if (cands.isEmpty()) "" else " · ${cands.size} candidate(s)"
+        return "Searching computer $ecu (${ecuIdx + 1}/${ecus.size}) · $pct%$c"
+    }
+
+    private suspend fun discover(elm: Elm327) {
         elm.query("ATH1", 300)
         val wildcard = !elm.query("ATCRA7XX", 300).contains("?")
         if (!wildcard) { elm.query("ATCF700", 300); elm.query("ATCM700", 300) }
-        val ids = (0x700..0x7F7).filter { it != 0x7DF && it !in 0x7E8..0x7EF }
-        for ((i, id) in ids.withIndex()) {
-            currentCoroutineContext().ensureActive()
-            if (cancelled) break
+        val end = minOf(discIdx + PER_STEP_IDS, DISCOVER_IDS.size)
+        for (id in DISCOVER_IDS.subList(discIdx, end)) {
             val tx = "%03X".format(id)
             elm.query("ATSH$tx", 200)
             val r = elm.query("3E00", 200).uppercase()
@@ -192,49 +258,67 @@ object OdoFinder {
                 if (line.length < 7 || !Regex("^7[0-9A-F]{2}").containsMatchIn(line)) continue
                 val rxId = line.substring(0, 3)
                 if (rxId == tx) continue
-                // positive (7E00) or negative (7F3E..) reply both prove an ECU is there
-                if (line.contains("7E00") || line.contains("7F3E")) found.putIfAbsent(tx, rxId)
-            }
-            if (i % 8 == 0) set {
-                copy(progress = 0.02f + 0.08f * i / ids.size, text = "Looking for ECUs… $tx · found ${found.size}",
-                    ecus = found.map { "${it.key}→${it.value}" })
+                if ((line.contains("7E00") || line.contains("7F3E")) && ecus.none { it.first == tx }) ecus += tx to rxId
             }
         }
-        return found.toList()
+        discIdx = end
     }
 
-    /** Every (offset, width, divisor, endian) reading of [p] within 5 km of the dashboard figure. */
-    private fun findIn(p: IntArray, dashKm: Int): List<OdoSpec> {
-        val out = mutableListOf<OdoSpec>()
+    private suspend fun scanDids(elm: Elm327, tx: String, rx: String, dids: List<Int>, odoKm: Double) {
+        elm.query("ATSH$tx", 300)
+        elm.query("ATCRA$rx", 300)
+        for (d in dids) {
+            val did = "%04X".format(d)
+            val p = Elm327.payloadAfter(elm.query("22$did", 250), "62$did") ?: continue
+            if (p.isNotEmpty()) consider(OdoSpec(tx, rx, did, p.size, 0, 0, 1), p, odoKm)
+        }
+    }
+
+    /** Records every reading of [p] within 5 km of the app odometer as a candidate. */
+    private fun consider(base: OdoSpec, p: IntArray, odoKm: Double) {
         for (width in 2..4) for (off in 0..p.size - width) for (little in listOf(false, true)) {
             if (width == 2 && little) continue
             for (div in intArrayOf(1, 10, 100, 1000)) {
-                val s = OdoSpec("", "", "", 0, off, width, div, little)
-                val v = s.decode(p) ?: continue
-                if (dashKm > 0 && abs(v - dashKm) <= 5) out += s
+                val spec = base.copy(offset = off, width = width, divisor = div, little = little, need = p.size)
+                val v = spec.decode(p) ?: continue
+                if (abs(v - odoKm) <= 5 && cands.none { it.spec == spec }) cands += OdoMatch(spec, v, odoKm)
             }
         }
-        return out
+        if (cands.size > 30) cands = cands.sortedBy { it.diff }.take(30).toMutableList()
     }
 
-    private val rank = compareByDescending<OdoMatch> { it.confident }
-        .thenBy { it.diff }.thenByDescending { it.spec.width }.thenBy { it.spec.divisor }
-
-    private fun best(m: List<OdoMatch>) = m.sortedWith(rank).firstOrNull()
-
-    private fun finish(best: OdoMatch?, all: List<OdoMatch>, stopped: Boolean = false): OdoMatch? {
-        set {
-            copy(
-                running = false, finished = true, progress = 1f,
-                matches = all.sortedWith(rank).take(10),
-                text = when {
-                    stopped -> "Stopped. ${all.size} candidate(s) so far."
-                    best == null -> "Not found in the usual places. The app will keep using GPS distance."
-                    best.confident -> "Found it: ${"%.1f".format(best.valueKm)} km — ${best.spec.describe()}"
-                    else -> "Possible match (weak): ${"%.1f".format(best.valueKm)} km. Drive a few km and re-run to confirm."
+    /** A real odometer rises with the GPS distance; a coincidence doesn't. */
+    private suspend fun checkCandidates(elm: Elm327, odoKm: Double): OdoSpec? {
+        val keep = mutableListOf<OdoMatch>()
+        for (c in cands.toList()) {
+            val v = readSpec(elm, c.spec)
+            if (v == null) { keep += c; continue }
+            val driven = odoKm - c.atOdoKm
+            val rose = v - c.valueKm
+            val upd = c.copy(latestKm = v, latestOdoKm = odoKm)
+            when {
+                driven < 2 -> keep += upd                                   // not enough driving yet
+                abs(rose - driven) <= maxOf(1.0, driven * 0.05) -> {        // tracks GPS within 5 %
+                    val ok = upd.copy(confirmed = true)
+                    cands = (listOf(ok) + keep + cands.filter { it.spec != c.spec && it !in keep }).toMutableList()
+                    active = false; stage = 4; save()
+                    publish("Found and confirmed: ${"%.1f".format(v)} km — ${c.spec.describe()}", finished = true)
+                    return c.spec
                 }
-            )
+                else -> {}                                                  // didn't track: drop it
+            }
         }
-        return best
+        cands = keep
+        return null
     }
+
+    private suspend fun readSpec(elm: Elm327, spec: OdoSpec): Double? = if (spec.isObd) {
+        elm.query("ATSH7DF", 300); elm.query("ATCRA${spec.rx}", 300)
+        Elm327.payloadAfter(elm.query("01A6", 500), "41A6")?.let { spec.decode(it) }
+    } else {
+        elm.query("ATSH${spec.tx}", 300); elm.query("ATCRA${spec.rx}", 300)
+        Elm327.payloadAfter(elm.query("22${spec.did}", 400), "62${spec.did}")?.let { spec.decode(it) }
+    }
+
+    val isActive get() = active
 }

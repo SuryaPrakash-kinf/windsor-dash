@@ -342,7 +342,7 @@ private fun OdometerPanel(st: DashState) {
             OutlinedButton(onClick = { ask = "set" }) { Text("Correct") }
             OutlinedButton(
                 onClick = { ask = "find" },
-                enabled = st.status == LinkStatus.LIVE && !finder.running,
+                enabled = !finder.running,
             ) { Text("Find in car") }
             if (st.odoSpec != null) TextButton(onClick = { Dash.saveOdoSpec(null) }) { Text("Forget", color = Red) }
         }
@@ -359,7 +359,12 @@ private fun OdometerPanel(st: DashState) {
                     progress = { finder.progress }, modifier = Modifier.fillMaxWidth(),
                     color = Teal, trackColor = Line,
                 )
-                Text("Car on and parked. Takes 5–20 min; live readings pause meanwhile.", color = Dim, fontSize = 11.sp)
+                Text(
+                    "Runs in the background while connected — live readings carry on. Expect about an hour of " +
+                        "driving or charging in total; progress is kept between trips. A match is only trusted after " +
+                        "it rises with the GPS distance.",
+                    color = Dim, fontSize = 11.sp
+                )
             }
             if (finder.ecus.isNotEmpty()) Text("ECUs answering: ${finder.ecus.joinToString(", ")}", color = Dim, fontSize = 11.sp)
             for (m in finder.matches) {
@@ -367,8 +372,15 @@ private fun OdometerPanel(st: DashState) {
                 Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "%.1f km · %s".format(m.valueKm, if (m.confident) "strong match" else "weak match"),
-                            color = if (m.confident) Green else Amber, fontSize = 13.sp
+                            "%.1f km · %s".format(
+                                m.latestKm,
+                                when {
+                                    m.confirmed -> "confirmed by driving"
+                                    m.latestOdoKm - m.atOdoKm >= 0.5 -> "checking (+%.1f vs GPS +%.1f km)".format(m.latestKm - m.valueKm, m.latestOdoKm - m.atOdoKm)
+                                    else -> "candidate — drive 2 km to check"
+                                }
+                            ),
+                            color = if (m.confirmed) Green else Amber, fontSize = 13.sp
                         )
                         Text(m.spec.describe(), color = Dim, fontSize = 11.sp)
                     }
@@ -393,8 +405,8 @@ private fun OdometerPanel(st: DashState) {
                 Column {
                     Text(
                         if (mode == "set") "Type the km shown on the instrument cluster. GPS distance counts on from here."
-                        else "Type the km shown on the cluster right now. The app reads the car's modules looking for that " +
-                            "number (read-only). Keep the car on and parked.",
+                        else "Type the km shown on the cluster right now. The app then searches the car's computers for that " +
+                            "number in the background (read-only requests) while you drive normally.",
                         color = Dim, fontSize = 13.sp
                     )
                     Spacer(Modifier.height(8.dp))
@@ -410,7 +422,7 @@ private fun OdometerPanel(st: DashState) {
                     val km = text.toIntOrNull()
                     if (km != null && km > 0) {
                         Dash.setOdometer(km)
-                        if (mode == "find") OdoFinder.request(km)
+                        if (mode == "find") OdoFinder.start()
                     }
                     ask = null
                 }) { Text(if (mode == "set") "Save" else "Start search") }

@@ -114,6 +114,7 @@ object Dash {
         if (::prefs.isInitialized) return
         prefs = ctx.applicationContext.getSharedPreferences("dash", Context.MODE_PRIVATE)
         LocalLog.init(ctx.applicationContext)
+        com.spk.windsordash.obd.OdoFinder.init(ctx.applicationContext)
         _state.update {
             it.copy(
                 adapter = AdapterRef.decode(prefs.getString("adapter", null)),
