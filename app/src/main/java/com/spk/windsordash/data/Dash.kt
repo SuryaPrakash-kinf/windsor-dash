@@ -433,7 +433,11 @@ object Dash {
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
             if (charge != null && charge.active && (old == null || !old.active)) LocalLog.event("charging started at ${s.socPct?.toInt() ?: "?"}%")
-            chargeEnded?.let { logCharge(it, "charging ended") }
+            chargeEnded?.let { c ->
+                logCharge(c, "charging ended")
+                val odo = _state.value.odoKm?.toInt()
+                Thread { runCatching { ChargeLog.addAuto(c, odo) } }.start()
+            }
             if (chargeDiscarded) LocalLog.event("ignored a very short inflow (regen, not a charge)")
         }
     }
@@ -451,7 +455,11 @@ object Dash {
                 keep = lastRealCharge
             } else {
                 keep = ended; lastRealCharge = ended
-                if (st0.status != LinkStatus.DEMO) logCharge(ended, "charging ended (link lost)")
+                if (st0.status != LinkStatus.DEMO) {
+                    logCharge(ended, "charging ended (link lost)")
+                    val odo = st0.odoKm?.toInt()
+                    Thread { runCatching { ChargeLog.addAuto(ended, odo) } }.start()
+                }
             }
         }
         _state.update { it.copy(charge = keep, charging = false) }

@@ -76,14 +76,14 @@ import com.spk.windsordash.service.LinkService
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private val Bg = Color(0xFF0B0F14)
-private val Card = Color(0xFF141B24)
-private val Line = Color(0xFF232E3B)
-private val Dim = Color(0xFF8A97A8)
-private val Teal = Color(0xFF2DD4BF)
-private val Amber = Color(0xFFFBBF24)
-private val Red = Color(0xFFF87171)
-private val Green = Color(0xFF4ADE80)
+internal val Bg = Color(0xFF0B0F14)
+internal val Card = Color(0xFF141B24)
+internal val Line = Color(0xFF232E3B)
+internal val Dim = Color(0xFF8A97A8)
+internal val Teal = Color(0xFF2DD4BF)
+internal val Amber = Color(0xFFFBBF24)
+internal val Red = Color(0xFFF87171)
+internal val Green = Color(0xFF4ADE80)
 
 class MainActivity : ComponentActivity() {
     private val scanner = AdapterScanner()
@@ -125,7 +125,12 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = Teal, background = Bg, surface = Card)) {
                 val st by Dash.state.collectAsStateWithLifecycle()
                 var picking by remember { mutableStateOf(false) }
-                Screen(
+                var page by remember { mutableStateOf("home") }
+                androidx.activity.compose.BackHandler(enabled = page != "home") { page = "home" }
+                when (page) {
+                    "report" -> ReportScreen(onBack = { page = "home" })
+                    "charges" -> ChargesScreen(onBack = { page = "home" })
+                    else -> Screen(
                     st,
                     onConnect = {
                         if (st.adapter == null) withPermissions { picking = true }
@@ -133,7 +138,10 @@ class MainActivity : ComponentActivity() {
                     },
                     onDisconnect = { LinkService.stop(this) },
                     onPick = { withPermissions { picking = true } },
+                    onReport = { page = "report" },
+                    onCharges = { page = "charges" },
                 )
+                }
                 if (picking) PickerDialog(
                     scanner,
                     onDismiss = { picking = false },
@@ -149,7 +157,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Unit, onPick: () -> Unit) {
+private fun Screen(
+    st: DashState, onConnect: () -> Unit, onDisconnect: () -> Unit, onPick: () -> Unit,
+    onReport: () -> Unit = {}, onCharges: () -> Unit = {},
+) {
     val s = st.sample
     val running = st.status != LinkStatus.IDLE
     Column(
@@ -178,6 +189,10 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             "Adapter: ${st.adapter?.name ?: "none chosen"}  ·  change",
             color = Teal, fontSize = 13.sp, modifier = Modifier.clickable(onClick = onPick)
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onReport) { Text("Report") }
+            OutlinedButton(onClick = onCharges) { Text("Charging log") }
+        }
 
         // Not live: say so, so old numbers aren't mistaken for current ones
         if (!st.hasData && s.at > 0) {
@@ -460,7 +475,8 @@ private fun RunsPanel(st: DashState) {
             Text(
                 "Driving now · %.1f km · top %.0f km/h · SoC %s→%s%%".format(
                     current.km, current.topKmh, current.socStart?.roundToInt() ?: "–", current.socEnd?.roundToInt() ?: "–"
-                ),
+                ) + (if (current.socStart != null && current.socEnd != null)
+                    " · used %d%%".format((current.socStart - current.socEnd).roundToInt()) else ""),
                 color = Teal, fontSize = 13.sp, modifier = Modifier.padding(bottom = 6.dp)
             )
         }
@@ -471,7 +487,11 @@ private fun RunsPanel(st: DashState) {
         for (r in runs) {
             val c = { i: Int -> r.getOrNull(i)?.takeIf { it.isNotBlank() } ?: "–" }
             Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                Text("${c(0)} → ${c(1).substringAfter(' ')}  ·  ${c(3)}→${c(4)}%", color = Color.White, fontSize = 14.sp)
+                val used = r.getOrNull(3)?.toIntOrNull()?.let { a -> r.getOrNull(4)?.toIntOrNull()?.let { a - it } }
+                Text(
+                    "${c(0)} → ${c(1).substringAfter(' ')}  ·  ${c(3)}→${c(4)}%" + (used?.let { "  ·  used $it%" } ?: ""),
+                    color = Color.White, fontSize = 14.sp
+                )
                 Text(
                     "${c(5)} km · top ${c(6)} km/h · avg ${c(7)} moving / ${c(8)} overall · ${c(10)} Wh/km",
                     color = Dim, fontSize = 12.sp
@@ -596,10 +616,10 @@ private fun LogsPanel() {
     )
 }
 
-private fun minutes(m: Long): String = if (m >= 60) "${m / 60} h ${m % 60} min" else "$m min"
+internal fun minutes(m: Long): String = if (m >= 60) "${m / 60} h ${m % 60} min" else "$m min"
 
 @Composable
-private fun Panel(content: @Composable () -> Unit) {
+internal fun Panel(content: @Composable () -> Unit) {
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp)
     ) { content() }

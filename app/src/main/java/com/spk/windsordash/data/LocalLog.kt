@@ -166,6 +166,48 @@ object LocalLog {
         }
     }
 
+    /* ---------- whole-file helpers (small files: runs, charges) ---------- */
+
+    /** Reads a small file from the chosen folder (or app storage). */
+    fun readText(name: String): String? = io.submit<String?> {
+        runCatching {
+            tree()?.findFile(name)?.let { doc ->
+                appCtx.contentResolver.openInputStream(doc.uri)?.bufferedReader()?.use { it.readText() }
+            } ?: File(dir, name).takeIf { it.exists() }?.readText()
+        }.getOrNull()
+    }.get()
+
+    /** Replaces a small file in the chosen folder (or app storage). */
+    fun writeText(name: String, text: String) {
+        io.submit {
+            runCatching {
+                val t = tree()
+                if (t != null) {
+                    val doc = t.findFile(name) ?: t.createFile("text/csv", name.removeSuffix(".csv"))
+                    if (doc != null) {
+                        appCtx.contentResolver.openOutputStream(doc.uri, "wt")?.use { it.write(text.toByteArray()) }
+                        return@runCatching
+                    }
+                }
+                File(dir, name).writeText(text)
+            }
+        }.get()
+    }
+
+    /** Saves report.html next to the logs and returns a shareable copy in the app cache. */
+    fun saveReport(ctx: Context, html: String): Uri {
+        runCatching {
+            val t = tree()
+            if (t != null) {
+                val doc = t.findFile("report.html") ?: t.createFile("text/html", "report")
+                doc?.let { d -> appCtx.contentResolver.openOutputStream(d.uri, "wt")?.use { it.write(html.toByteArray()) } }
+            }
+        }
+        val f = File(File(ctx.cacheDir, "reports").apply { mkdirs() }, "windsor-report.html")
+        f.writeText(html)
+        return androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".logs", f)
+    }
+
     /* ---------- runs report ---------- */
 
     const val RUNS_HEADER = "start,end,minutes,soc_start,soc_end,km,top_kmh,avg_moving_kmh,avg_kmh,kwh_used,wh_per_km,regen_kwh"
