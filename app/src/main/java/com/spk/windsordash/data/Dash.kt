@@ -548,9 +548,11 @@ object Dash {
             } else {
                 // Don't close it yet: the car may simply have gone to sleep (locked while charging).
                 // It's finished with the battery's own counters when the car answers again.
-                setPaused(PausedCharge(c0, now, st0.sample.socPct, st0.sample.energyLeftKwh))
-                LocalLog.event("charging: link lost at ${st0.sample.socPct?.toInt() ?: "?"}% — will fill in on reconnect")
-                Alerts.linkPausedWhileCharging()
+                if (paused == null) {   // first loss only; retries mustn't move the loss time
+                    setPaused(PausedCharge(c0, now, st0.sample.socPct, st0.sample.energyLeftKwh))
+                    LocalLog.event("charging: link lost at ${st0.sample.socPct?.toInt() ?: "?"}% — will fill in on reconnect")
+                    Alerts.linkPausedWhileCharging()
+                }
                 keep = c0
             }
         }
