@@ -7,6 +7,9 @@ import kotlin.math.PI
 import kotlin.math.max
 import kotlin.math.sin
 
+/** One raw research read: ECU request id, DID, payload hex (or NRC:xx). */
+data class RawRead(val tx: String, val did: String, val hex: String, val sweep: Boolean)
+
 /** One reading from the car. Null = not read (yet) this cycle. */
 data class Sample(
     val at: Long = System.currentTimeMillis(),
@@ -19,7 +22,8 @@ data class Sample(
     val minCellMv: Int? = null,
     val maxCellId: Int? = null,
     val minCellId: Int? = null,
-    val battTempC: Int? = null,
+    /** Thermal-module DID A021. NOT the pack temperature (stuck at 31 °C all day) — kept for research only. */
+    val a021Raw: Int? = null,
     val aux12V: Double? = null,
     val odometerKm: Int? = null,
 )
@@ -55,8 +59,12 @@ object WindsorProfile {
         elm: Elm327,
         odoSpec: () -> OdoSpec?,
         between: suspend () -> Unit = {},
+        research: () -> Boolean = { false },
+        onRaw: (List<RawRead>) -> Unit = {},
         emit: (Sample) -> Unit,
     ) {
+        var lastSweepAt = 0L
+        val sweepQueue = ArrayDeque<Pair<String, String>>()
         var last = Sample()
         var cycle = 0
         var misses = 0
@@ -93,7 +101,7 @@ object WindsorProfile {
 
             if (cycle % 15 == 2) {
                 elm.target(THERM_TX, THERM_RX)
-                elm.readDid("A021", 1)?.get(0)?.let { if (it in 0..80) s = s.copy(battTempC = it) }
+                elm.readDid("A021", 1)?.get(0)?.let { s = s.copy(a021Raw = it) }
                 elm.voltage12V()?.let { if (it in 6.0..16.0) s = s.copy(aux12V = it) }
             }
 
@@ -107,6 +115,27 @@ object WindsorProfile {
                 } else odoFails++
             }
 
+            // Research capture: raw bytes from candidate DIDs so the real pack temperature
+            // (and more) can be identified from a log. Off unless switched on.
+            if (research() && gotAny) {
+                val now = System.currentTimeMillis()
+                if (cycle % 15 == 7) onRaw(readRawSet(elm, BMS_TX, BMS_RX, RESEARCH_BMS) + readRawSet(elm, THERM_TX, THERM_RX, RESEARCH_THERM))
+                // Full sweep of D0xx (BMS) and A0xx (thermal) every 10 min, 8 DIDs per cycle so
+                // live readings and energy totals keep flowing (~70 s per sweep).
+                if (sweepQueue.isEmpty() && now - lastSweepAt > 10 * 60_000L) {
+                    lastSweepAt = now
+                    (0xD000..0xD0FF).forEach { sweepQueue.add(BMS_TX to "%04X".format(it)) }
+                    (0xA000..0xA0FF).forEach { sweepQueue.add(THERM_TX to "%04X".format(it)) }
+                }
+                if (sweepQueue.isNotEmpty()) {
+                    val batch = List(minOf(8, sweepQueue.size)) { sweepQueue.removeFirst() }
+                    for ((tx, group) in batch.groupBy { it.first }) {
+                        val rx = if (tx == BMS_TX) BMS_RX else THERM_RX
+                        onRaw(readRawSet(elm, tx, rx, group.map { it.second }, sweep = true))
+                    }
+                }
+            }
+
             if (gotAny) misses = 0 else misses++
             if (misses >= 8) throw IllegalStateException("Car stopped answering (ignition off?)")
 
@@ -115,6 +144,21 @@ object WindsorProfile {
             cycle++
             delay(150)
         }
+    }
+
+    private val RESEARCH_BMS = listOf("D01D", "D014", "D01F", "D016", "D030", "D031", "D032", "D033",
+        "D034", "D035", "D036", "D037", "D02B", "D101")
+    private val RESEARCH_THERM = listOf("A021", "A035", "A017")
+
+    private suspend fun readRawSet(elm: Elm327, tx: String, rx: String, dids: List<String>, sweep: Boolean = false): List<RawRead> {
+        elm.target(tx, rx)
+        val out = mutableListOf<RawRead>()
+        for (d in dids) {
+            val v = elm.readRaw(d, if (sweep) 200 else 300) ?: continue
+            if (sweep && v.startsWith("NRC")) continue      // sweeps keep only DIDs that answer with data
+            out += RawRead(tx, d, v, sweep)
+        }
+        return out
     }
 
     suspend fun readOdometer(elm: Elm327, spec: OdoSpec): Double? {
@@ -157,7 +201,7 @@ object WindsorProfile {
                 Sample(
                     at = now, packV = v, currentA = a, socPct = soc.toInt().toDouble(), sohPct = 97.0,
                     energyLeftKwh = energy, maxCellMv = cellAvg + 6, minCellMv = cellAvg - 5,
-                    maxCellId = 41, minCellId = 77, battTempC = (29 + 4 * sin(phase / 60 * PI)).toInt(),
+                    maxCellId = 41, minCellId = 77,
                     aux12V = if (charging) 14.1 else 13.8, odometerKm = odo.toInt(),
                 )
             )

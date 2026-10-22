@@ -52,8 +52,8 @@ object LocalLog {
 
     private const val HEADER =
         "time,status,soc_pct,soh_pct,energy_left_kwh,pack_v,current_a,power_kw," +
-            "max_cell_mv,max_cell_no,min_cell_mv,min_cell_no,cell_spread_mv,batt_temp_c,aux_12v,odometer_km," +
-            "odo_shown_km,odo_source,trip_km,trip_dist_source"
+            "max_cell_mv,max_cell_no,min_cell_mv,min_cell_no,cell_spread_mv,a021_unverified,aux_12v,odometer_km," +
+            "odo_shown_km,odo_source,trip_km,trip_dist_source,charging,parked,gps_on"
     private const val EVENTS_HEADER = "time,event"
 
     private fun prefs() = appCtx.getSharedPreferences("dash", Context.MODE_PRIVATE)
@@ -63,6 +63,7 @@ object LocalLog {
         appCtx = ctx.applicationContext
         dir = File(appCtx.filesDir, "logs").apply { mkdirs() }
         enabled = prefs().getBoolean("log", true)
+        research = prefs().getBoolean("research", false)
         folderUri = prefs().getString("log_tree", null)?.let(Uri::parse)?.takeIf { stillAllowed(it) }
     }
 
@@ -135,8 +136,9 @@ object LocalLog {
                         stamp.format(Date(s.at)), status.name.lowercase(),
                         s.socPct, s.sohPct, s.energyLeftKwh?.r(1), s.packV?.r(1), s.currentA?.r(1), powerKw?.r(2),
                         s.maxCellMv, s.maxCellId, s.minCellMv, s.minCellId, spread,
-                        s.battTempC, s.aux12V?.r(2), s.odometerKm,
+                        s.a021Raw, s.aux12V?.r(2), s.odometerKm,
                         st.odoKm?.r(1), st.odoSource.name.lowercase(), st.trip?.km?.r(2), st.trip?.distSource,
+                        if (st.charging) 1 else 0, if (st.parked) 1 else 0, if (st.gpsOn) 1 else 0,
                     ).joinToString(",") { it?.toString() ?: "" }
                 )
                 w.newLine()
@@ -161,6 +163,35 @@ object LocalLog {
             }
         }
     }
+
+    /* ---------- research capture ---------- */
+
+    var research = false
+        private set
+
+    fun setResearch(on: Boolean) {
+        research = on
+        prefs().edit().putBoolean("research", on).apply()
+        event(if (on) "research capture on" else "research capture off", force = true)
+    }
+
+    /** Appends raw DID reads to raw-<date>.csv with the pack state at that moment. */
+    fun raw(reads: List<com.spk.windsordash.obd.RawRead>, s: Sample, powerKw: Double?) {
+        if (reads.isEmpty() || !::dir.isInitialized) return
+        val ts = stamp.format(Date())
+        val d = day.format(Date())
+        val ctxCols = listOf(s.socPct, s.packV?.r(1), s.currentA?.r(1), powerKw?.r(2), s.maxCellMv, s.minCellMv)
+            .joinToString(",") { it?.toString() ?: "" }
+        io.execute {
+            runCatching {
+                val (w, pfd) = openAppend("raw-$d.csv", RAW_HEADER)
+                w.use { out -> for (r in reads) { out.write("$ts,${r.tx},${r.did},${r.hex},${if (r.sweep) 1 else 0},$ctxCols"); out.newLine() } }
+                runCatching { pfd?.close() }
+            }
+        }
+    }
+
+    private const val RAW_HEADER = "time,ecu,did,hex,sweep,soc_pct,pack_v,current_a,power_kw,max_cell_mv,min_cell_mv"
 
     fun flush() = io.execute { runCatching { writer?.flush() } }
 

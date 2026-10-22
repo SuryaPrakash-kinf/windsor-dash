@@ -57,6 +57,18 @@ class Elm327(private val t: ObdTransport) {
         return parseDid(resp, did, bytes)
     }
 
+    /**
+     * Raw read for research: the payload hex after "62<DID>", "NRC:xx" for a negative
+     * response (7F 22 xx), or null when nothing came back.
+     */
+    suspend fun readRaw(did: String, timeoutMs: Long = 250): String? {
+        val resp = query("22$did", timeoutMs)
+        payloadAfter(resp, "62$did")?.let { p -> return p.joinToString("") { "%02X".format(it) } }
+        val clean = joinFrames(resp)
+        val i = clean.indexOf("7F22")
+        return if (i >= 0 && clean.length >= i + 6) "NRC:" + clean.substring(i + 4, i + 6) else null
+    }
+
     suspend fun voltage12V(): Double? {
         val r = query("ATRV", 400)
         return Regex("""(\d+(?:\.\d+)?)\s*V""", RegexOption.IGNORE_CASE).find(r)

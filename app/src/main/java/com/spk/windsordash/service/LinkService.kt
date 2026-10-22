@@ -110,6 +110,11 @@ class LinkService : Service() {
                                 val found = OdoFinder.runIfPending(elm)
                                 if (found != null && found.confident) Dash.saveOdoSpec(found.spec)
                             },
+                            research = { com.spk.windsordash.data.LocalLog.research },
+                            onRaw = { reads ->
+                                val st = Dash.state.value
+                                com.spk.windsordash.data.LocalLog.raw(reads, st.sample, st.powerKw)
+                            },
                         ) { Dash.onSample(it) }
                     }
                 } catch (e: CancellationException) {

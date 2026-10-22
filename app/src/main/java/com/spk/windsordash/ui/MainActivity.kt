@@ -285,7 +285,6 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             val delta = st.cellDeltaMv
             Grid(
                 "Health (SoH)" to (s.sohPct?.let { "${it.roundToInt()} %" } ?: "–"),
-                "Pack temp" to (s.battTempC?.let { "$it °C" } ?: "–"),
                 "Highest cell" to (s.maxCellMv?.let { "$it mV" + (s.maxCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
                 "Lowest cell" to (s.minCellMv?.let { "$it mV" + (s.minCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
                 "Cell spread" to (delta?.let { "$it mV" } ?: "–"),
@@ -447,6 +446,18 @@ private fun LogsPanel() {
         }
         err?.let {
             Text("Couldn't write to the folder ($it) — saving to app storage meanwhile.", color = Amber, fontSize = 12.sp)
+        }
+        var research by remember { mutableStateOf(LocalLog.research) }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Research capture", color = Color.White, fontSize = 14.sp)
+                Text(
+                    "Also records raw battery-computer bytes to raw-<date>.csv, to find the real pack " +
+                        "temperature. Switch on before a DC charge or a long drive.",
+                    color = Dim, fontSize = 12.sp
+                )
+            }
+            Switch(checked = research, onCheckedChange = { research = it; LocalLog.setResearch(it) })
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

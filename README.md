@@ -18,6 +18,13 @@ The app makes no network calls except to a Wi-Fi OBD dongle. It has no analytics
 
 In app-storage mode the Logs panel also offers **Save to Downloads** (copies to `Download/WindsorDash`), **Share**, **Delete**, or switch logging off. Demo mode is never logged.
 
+## Research capture
+The Windsor's real pack temperature DID isn't known yet. With **Research capture** on, the app writes `raw-<date>.csv`:
+- every ~10 s: raw bytes from candidate DIDs (BMS D01D, D014, D01F, D016, D030–D037, D02B, D101; thermal A021, A035, A017)
+- every 10 min: a sweep of D000–D0FF (BMS) and A000–A0FF (thermal), read 8 per cycle so live data keeps flowing; only DIDs that answer are kept
+
+Each row includes SoC, V, A and kW at that moment, so a value that rises with a DC charge stands out.
+
 ## Odometer
 EVDS (and v0.1 of this app) ask for the odometer at ECU 744/74C, DID B921. That address is copied from the MG ZS EV profile. The Windsor is a different platform (Wuling Cloud EV) with its own ECUs, so it usually gets no answer there.
 
@@ -39,7 +46,7 @@ Bluetooth LE (Vgate iCar Pro BLE, Veepeak BLE, OBDLink CX, vLinker BLE…), clas
 | BMS | 742 / 74A | D060 | Energy left | u16 / 10, kWh |
 | BMS | 742 / 74A | D06A / D06C | Max / min cell | u16, mV |
 | BMS | 742 / 74A | D06B / D06D | Max / min cell number | u8 |
-| Thermal | 745 / 74D | A021 | Battery temperature | u8, °C |
+| Thermal | 745 / 74D | A021 | **Not** pack temperature (constant 31 °C through a 61 kW DC charge). Logged as `a021_unverified` only | u8 |
 | Cluster? | 744 / 74C | B921 | Odometer (ZS EV guess — usually no reply on Windsor) | u24, km |
 
 Range = energy left ÷ efficiency (this trip once ≥ 5 km, otherwise your lifetime average, otherwise 130 Wh/km).

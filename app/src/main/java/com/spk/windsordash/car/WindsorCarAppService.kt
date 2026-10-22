@@ -155,7 +155,7 @@ class LiveScreen(ctx: CarContext) : DashScreen(ctx) {
             ),
         ) { screenManager.push(ChargingScreen(carContext)) }
         rows += row(
-            "Battery ${s.battTempC?.let { "$it °C" } ?: "–"} · SoH ${pct(s.sohPct)}",
+            "Battery SoH ${pct(s.sohPct)}",
             st.cellDeltaMv?.let { "Cell spread $it mV" + (s.aux12V?.let { v -> " · 12 V %.1f".format(v) } ?: "") },
         )
         return list("Windsor Dash", rows, strip)
@@ -183,7 +183,7 @@ class ChargingScreen(ctx: CarContext) : DashScreen(ctx) {
                 "Est. time to ${st.targetSoc}%: " + (st.minutesToTarget?.let { mins(it.toLong()) } ?: if (c.active) "–" else "done"),
                 "Estimate slows above 90% (LFP taper)",
             ),
-            row("Pack ${s.battTempC?.let { "$it °C" } ?: "–"}", st.cellDeltaMv?.let { "Cell spread $it mV" }),
+            row("Cell spread ${st.cellDeltaMv?.let { "$it mV" } ?: "–"}", s.maxCellMv?.let { "Highest ${it} mV · lowest ${s.minCellMv ?: "–"} mV" }),
         )
         return list("Charging", rows, strip, back = true)
     }
