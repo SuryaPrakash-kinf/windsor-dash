@@ -53,7 +53,7 @@ object LocalLog {
     private const val HEADER =
         "time,status,soc_pct,soh_pct,energy_left_kwh,pack_v,current_a,power_kw," +
             "max_cell_mv,max_cell_no,min_cell_mv,min_cell_no,cell_spread_mv,a021_unverified,aux_12v,odometer_km," +
-            "odo_shown_km,odo_source,trip_km,trip_dist_source,charging,parked,gps_on"
+            "odo_shown_km,odo_source,trip_km,trip_dist_source,charging,parked,gps_on,speed_kmh"
     private const val EVENTS_HEADER = "time,event"
 
     private fun prefs() = appCtx.getSharedPreferences("dash", Context.MODE_PRIVATE)
@@ -64,6 +64,8 @@ object LocalLog {
         dir = File(appCtx.filesDir, "logs").apply { mkdirs() }
         enabled = prefs().getBoolean("log", true)
         research = prefs().getBoolean("research", false)
+        keepDays = prefs().getInt("keep_days", 30)
+        io.execute { purge() }
         folderUri = prefs().getString("log_tree", null)?.let(Uri::parse)?.takeIf { stillAllowed(it) }
     }
 
@@ -138,7 +140,7 @@ object LocalLog {
                         s.maxCellMv, s.maxCellId, s.minCellMv, s.minCellId, spread,
                         s.a021Raw, s.aux12V?.r(2), s.odometerKm,
                         st.odoKm?.r(1), st.odoSource.name.lowercase(), st.trip?.km?.r(2), st.trip?.distSource,
-                        if (st.charging) 1 else 0, if (st.parked) 1 else 0, if (st.gpsOn) 1 else 0,
+                        if (st.charging) 1 else 0, if (st.parked) 1 else 0, if (st.gpsOn) 1 else 0, st.speedKmh?.r(0),
                     ).joinToString(",") { it?.toString() ?: "" }
                 )
                 w.newLine()
@@ -162,6 +164,74 @@ object LocalLog {
                 runCatching { pfd?.close() }
             }
         }
+    }
+
+    /* ---------- runs report ---------- */
+
+    const val RUNS_HEADER = "start,end,minutes,soc_start,soc_end,km,top_kmh,avg_moving_kmh,avg_kmh,kwh_used,wh_per_km,regen_kwh"
+    private val runStamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+
+    /** Appends one finished drive to runs.csv (kept forever — it's tiny). */
+    fun run(r: Run) {
+        if (!::dir.isInitialized) return
+        val end = r.lastMoveAt
+        val mins = (end - r.startedAt) / 60_000.0
+        val avgMoving = if (r.movingMs > 60_000) r.km / (r.movingMs / 3_600_000.0) else null
+        val avgAll = if (mins > 1) r.km / (mins / 60) else null
+        val line = listOf(
+            runStamp.format(Date(r.startedAt)), runStamp.format(Date(end)), mins.r(0),
+            r.socStart?.r(0), r.socEnd?.r(0), r.km.r(1), r.topKmh.r(0), avgMoving?.r(0), avgAll?.r(0),
+            (r.netWh / 1000).r(2), if (r.km >= 1) (r.netWh / r.km).r(0) else null, (r.regenWh / 1000).r(2),
+        ).joinToString(",") { it ?: "" }
+        io.execute {
+            runCatching {
+                val (w, pfd) = openAppend("runs.csv", RUNS_HEADER)
+                w.use { it.write(line); it.newLine() }
+                runCatching { pfd?.close() }
+            }
+        }
+    }
+
+    /** Latest runs, newest first (each row split into columns). */
+    fun readRuns(limit: Int = 30): List<List<String>> = io.submit<List<List<String>>> {
+        runCatching {
+            val text = tree()?.findFile("runs.csv")?.let { doc ->
+                appCtx.contentResolver.openInputStream(doc.uri)?.bufferedReader()?.use { it.readText() }
+            } ?: File(dir, "runs.csv").takeIf { it.exists() }?.readText()
+            text.orEmpty().lines().drop(1).filter { it.isNotBlank() }.map { it.split(',') }.takeLast(limit).reversed()
+        }.getOrDefault(emptyList())
+    }.get()
+
+    /** Shareable copy of runs.csv (from the folder or app storage). */
+    fun runsUri(ctx: Context): Uri? {
+        tree()?.findFile("runs.csv")?.let { return it.uri }
+        val f = File(dir, "runs.csv")
+        return if (f.exists()) androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".logs", f) else null
+    }
+
+    /* ---------- retention ---------- */
+
+    /** Days to keep samples/raw files (0 = keep everything). runs.csv and events.csv are never purged. */
+    var keepDays = 30
+        private set
+
+    fun setKeepDays(days: Int) {
+        keepDays = days
+        prefs().edit().putInt("keep_days", days).apply()
+        io.execute { purge() }
+    }
+
+    private val datedName = Regex("^(samples|raw)-(\\d{4}-\\d{2}-\\d{2}).*\\.csv$")
+
+    /** Deletes dated log files older than [keepDays], in app storage and in the chosen folder. */
+    private fun purge() {
+        if (keepDays <= 0 || !::dir.isInitialized) return
+        val cutoff = day.format(Date(System.currentTimeMillis() - keepDays * 86_400_000L))
+        fun old(name: String?) = name?.let { datedName.find(it)?.groupValues?.get(2) }?.let { it < cutoff } == true
+        var n = 0
+        runCatching { files().filter { old(it.name) }.forEach { if (it.delete()) n++ } }
+        runCatching { tree()?.listFiles()?.filter { old(it.name) }?.forEach { if (it.delete()) n++ } }
+        if (n > 0) event("purged $n log files older than $keepDays days", force = true)
     }
 
     /* ---------- research capture ---------- */
@@ -200,6 +270,7 @@ object LocalLog {
         val cur = writer
         if (cur != null && writerDay == d) return cur
         closeWriter()
+        purge()   // new day: drop files past the retention period
         val (w, pfd) = openAppend("samples-$d.csv", HEADER)
         writer = w; writerPfd = pfd; writerDay = d
         return w

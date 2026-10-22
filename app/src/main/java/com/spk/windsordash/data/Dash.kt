@@ -42,6 +42,19 @@ data class Trip(
     }
 }
 
+/** One drive: from first movement until 5 min parked, a charge, or the link dropping. */
+data class Run(
+    val startedAt: Long,
+    val socStart: Double?,
+    val lastMoveAt: Long,
+    val socEnd: Double? = socStart,
+    val km: Double = 0.0,
+    val movingMs: Long = 0,
+    val topKmh: Double = 0.0,
+    val netWh: Double = 0.0,
+    val regenWh: Double = 0.0,
+)
+
 data class ChargeSession(
     val startedAt: Long,
     val startSoc: Double?,
@@ -72,6 +85,8 @@ data class DashState(
     val odoSpec: OdoSpec? = null,
     val gpsOn: Boolean = false,
     val parked: Boolean = false,      // GPS reports ~0 speed right now
+    val speedKmh: Double? = null,     // GPS speed (good fixes only)
+    val run: Run? = null,             // drive in progress
 ) {
     val hasData get() = sample.at > 0 && (status == LinkStatus.LIVE || status == LinkStatus.DEMO)
     val cellDeltaMv get() = sample.maxCellMv?.let { mx -> sample.minCellMv?.let { mx - it } }
@@ -174,9 +189,31 @@ object Dash {
     }
 
     /** Every usable GPS fix: tells us whether the car is standing still. */
-    fun onGpsFix(speedMps: Float?) {
+    private val recentSpeeds = ArrayDeque<Double>()
+
+    @Synchronized
+    fun onGpsFix(speedMps: Float?, accuracyM: Float = 0f) {
         lastFixAt = System.currentTimeMillis()
         lastFixSpeed = speedMps
+        if (speedMps == null || accuracyM > 25f) return
+        val kmh = speedMps * 3.6
+        // Top speed = the lowest of the last 3 good fixes, so one GPS spike can't set a record.
+        recentSpeeds.addLast(kmh); while (recentSpeeds.size > 3) recentSpeeds.removeFirst()
+        val robust = if (recentSpeeds.size == 3) recentSpeeds.min() else 0.0
+        _state.update { st ->
+            val r = st.run
+            st.copy(speedKmh = kmh, run = if (r != null && robust > r.topKmh) r.copy(topKmh = robust) else r)
+        }
+    }
+
+    /** Writes the finished run to runs.csv (ignores tiny ones). */
+    private fun finishRun(r: Run?) {
+        if (r == null) return
+        _state.update { it.copy(run = null) }
+        if (r.km < 0.5 || _state.value.status == LinkStatus.DEMO) return
+        LocalLog.run(r)
+        LocalLog.event("run: %.1f km, SoC %s→%s, top %.0f km/h".format(
+            r.km, r.socStart?.toInt() ?: "?", r.socEnd?.toInt() ?: "?", r.topKmh))
     }
 
     fun setGpsOn(on: Boolean) = _state.update { it.copy(gpsOn = on) }
@@ -204,6 +241,7 @@ object Dash {
         whSinceOdo = 0.0
         val trip = st.trip
         if (trip != null) _state.update { it.copy(trip = trip.copy(gpsKm = trip.gpsKm + km)) }
+        st.run?.let { r -> _state.update { it.copy(run = it.run?.copy(km = (it.run?.km ?: r.km) + km)) } }
         if (st.odoSource != OdoSource.CAR) refreshOdo(null)
     }
 
@@ -371,6 +409,27 @@ object Dash {
             refreshOdo(s.odometerKm)
         }
 
+        // Runs: start on GPS movement, end after 5 min parked or when charging starts.
+        if (prev.status == LinkStatus.LIVE) {
+            val movingRun = now - lastGpsAt < 5_000
+            var r = _state.value.run
+            if (charging && r != null) { finishRun(r); r = null }
+            else if (r != null && now - r.lastMoveAt > 5 * 60_000L) { finishRun(r); r = null }
+            if (!charging) {
+                if (r == null && movingRun) r = Run(now, s.socPct, now)
+                if (r != null) {
+                    val wh = (kw ?: 0.0) * 1000 * dtH
+                    r = r.copy(
+                        lastMoveAt = if (movingRun) now else r.lastMoveAt,
+                        movingMs = r.movingMs + if (movingRun) (dtH * 3_600_000).toLong() else 0L,
+                        netWh = r.netWh + wh, regenWh = r.regenWh + if (wh < 0) -wh else 0.0,
+                        socEnd = s.socPct ?: r.socEnd,
+                    )
+                    _state.update { it.copy(run = r) }
+                }
+            }
+        }
+
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
             if (charge != null && charge.active && (old == null || !old.active)) LocalLog.event("charging started at ${s.socPct?.toInt() ?: "?"}%")
@@ -380,6 +439,7 @@ object Dash {
     }
 
     fun onDisconnected() {
+        finishRun(_state.value.run)
         lastAt = 0; negSince = 0; posSince = 0
         val st0 = _state.value
         val c0 = st0.charge

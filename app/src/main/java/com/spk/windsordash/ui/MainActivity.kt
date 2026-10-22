@@ -296,6 +296,7 @@ private fun Screen(st: DashState, onConnect: () -> Unit, onDisconnect: () -> Uni
             }
         }
 
+        RunsPanel(st)
         OdometerPanel(st)
         LogsPanel()
 
@@ -433,6 +434,55 @@ private fun OdometerPanel(st: DashState) {
 }
 
 @Composable
+private fun RunsPanel(st: DashState) {
+    val ctx = LocalContext.current
+    var runs by remember { mutableStateOf<List<List<String>>>(emptyList()) }
+    val current = st.run
+    // Reload when a run finishes (run goes back to null) and every 30 s.
+    LaunchedEffect(current == null) {
+        while (true) {
+            runs = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { LocalLog.readRuns(15) }
+            delay(30_000)
+        }
+    }
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Runs", color = Dim, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                val uri = LocalLog.runsUri(ctx)
+                if (uri == null) Toast.makeText(ctx, "No runs yet", Toast.LENGTH_SHORT).show()
+                else ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }, "Share runs report"))
+            }) { Text("Share") }
+        }
+        if (current != null) {
+            Text(
+                "Driving now · %.1f km · top %.0f km/h · SoC %s→%s%%".format(
+                    current.km, current.topKmh, current.socStart?.roundToInt() ?: "–", current.socEnd?.roundToInt() ?: "–"
+                ),
+                color = Teal, fontSize = 13.sp, modifier = Modifier.padding(bottom = 6.dp)
+            )
+        }
+        if (runs.isEmpty() && current == null) {
+            Text("Each drive is added here when it ends (5 min parked, a charge, or the link dropping).", color = Dim, fontSize = 12.sp)
+        }
+        // columns: start,end,minutes,soc_start,soc_end,km,top_kmh,avg_moving_kmh,avg_kmh,kwh_used,wh_per_km,regen_kwh
+        for (r in runs) {
+            val c = { i: Int -> r.getOrNull(i)?.takeIf { it.isNotBlank() } ?: "–" }
+            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                Text("${c(0)} → ${c(1).substringAfter(' ')}  ·  ${c(3)}→${c(4)}%", color = Color.White, fontSize = 14.sp)
+                Text(
+                    "${c(5)} km · top ${c(6)} km/h · avg ${c(7)} moving / ${c(8)} overall · ${c(10)} Wh/km",
+                    color = Dim, fontSize = 12.sp
+                )
+            }
+            HorizontalDivider(color = Line)
+        }
+    }
+}
+
+@Composable
 private fun LogsPanel() {
     val ctx = LocalContext.current
     var on by remember { mutableStateOf(LocalLog.enabled) }
@@ -459,6 +509,15 @@ private fun LogsPanel() {
         err?.let {
             Text("Couldn't write to the folder ($it) — saving to app storage meanwhile.", color = Amber, fontSize = 12.sp)
         }
+        var keep by remember { mutableStateOf(LocalLog.keepDays) }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(top = 8.dp)) {
+            Text("Keep logs", color = Dim, fontSize = 12.sp)
+            for ((d, label) in listOf(30 to "30 days", 90 to "90 days", 0 to "Forever")) FilterChip(
+                selected = keep == d, onClick = { keep = d; LocalLog.setKeepDays(d) }, label = { Text(label, fontSize = 12.sp) })
+        }
+        Text("Older samples/raw files are deleted daily (also in your chosen folder). runs.csv and events.csv are kept.",
+            color = Dim, fontSize = 11.sp)
         var research by remember { mutableStateOf(LocalLog.research) }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
             Column(Modifier.weight(1f)) {

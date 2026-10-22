@@ -17,7 +17,7 @@ import androidx.core.content.ContextCompat
  */
 class GpsDistance(
     private val ctx: Context,
-    private val onFix: (speedMps: Float?) -> Unit = {},
+    private val onFix: (speedMps: Float?, accuracyM: Float) -> Unit = { _, _ -> },
     private val onMeters: (Double) -> Unit,
 ) {
     private val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -58,7 +58,7 @@ class GpsDistance(
     private fun handle(loc: Location) {
         if (!loc.hasAccuracy()) return
         // Speed is useful even from a rough fix (e.g. under a charging canopy).
-        if (loc.accuracy <= 60f) onFix(if (loc.hasSpeed()) loc.speed else null)
+        if (loc.accuracy <= 60f) onFix(if (loc.hasSpeed()) loc.speed else null, loc.accuracy)
         if (loc.accuracy > 25f) return
         lastFixAt = System.currentTimeMillis()
         val prev = last
