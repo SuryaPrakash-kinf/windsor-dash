@@ -69,7 +69,7 @@ class GpsDistance(
         val speed = d / dt
         when {
             speed > 55 -> last = loc                               // > 200 km/h: a GPS jump, skip it
-            loc.hasSpeed() && loc.speed < 1.0f && d < 15 -> {}      // parked: ignore drift, keep anchor
+            loc.hasSpeed() && loc.speed < 1.5f && d < 25 -> {}      // parked: ignore drift, keep anchor
             d < maxOf(loc.accuracy, prev.accuracy) * 0.5 && dt < 10 -> {}  // too small to trust yet
             else -> { onMeters(d); last = loc }
         }

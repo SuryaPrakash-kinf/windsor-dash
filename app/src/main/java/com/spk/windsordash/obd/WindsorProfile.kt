@@ -24,6 +24,11 @@ data class Sample(
     val minCellId: Int? = null,
     /** Thermal-module DID A021. NOT the pack temperature (stuck at 31 °C all day) — kept for research only. */
     val a021Raw: Int? = null,
+    /** Raw single bytes being identified as temperatures (raw − 50 looks like °C; unconfirmed). */
+    val d02bRaw: Int? = null,   // pack temperature candidate
+    val d02eRaw: Int? = null,   // fast-rising: motor/inverter?
+    val d016Raw: Int? = null,   // tracks outside air: coolant/inlet?
+    val d036Raw: Int? = null,   // fast-rising: drive unit?
     val aux12V: Double? = null,
     val odometerKm: Int? = null,
 )
@@ -97,6 +102,16 @@ object WindsorProfile {
                         minCellId = elm.readDid("D06D", 1)?.get(0)?.takeIf { it in 1..CELLS },
                     )
                 }
+            }
+
+            if (cycle % 15 == 9) {
+                elm.target(BMS_TX, BMS_RX)
+                s = s.copy(
+                    d02bRaw = elm.readDid("D02B", 1)?.get(0) ?: s.d02bRaw,
+                    d02eRaw = elm.readDid("D02E", 1)?.get(0) ?: s.d02eRaw,
+                    d016Raw = elm.readDid("D016", 1)?.get(0) ?: s.d016Raw,
+                    d036Raw = elm.readDid("D036", 1)?.get(0) ?: s.d036Raw,
+                )
             }
 
             if (cycle % 15 == 2) {

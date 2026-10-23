@@ -147,6 +147,7 @@ object Dash {
     private var lastRealCharge: ChargeSession? = null
     private var lastFixAt = 0L
     private var lastFixSpeed: Float? = null
+    private var idleSince = 0L
     private var inflowWh = 0.0          // energy flowing in before we decided it's a charge
     private var paused: PausedCharge? = null
     private var offlineChecked = false
@@ -213,9 +214,24 @@ object Dash {
                     "if you also drove in between, the real charge was larger." +
                     (tariff?.let { " Cost calculated at home tariff ₹%.2f/kWh.".format(it) } ?: ""),
             )
-            Thread { runCatching { ChargeLog.upsert(entry) } }.start()
-            LocalLog.event("charge found while disconnected: %.0f→%.0f%%, +%.1f kWh".format(soc0, soc, dE))
-            Alerts.offlineCharge(soc0, soc, dE)
+            val gap = "Link lost ${hm.format(Date(at))}–${hm.format(Date(s.at))}: +%.1f kWh from the battery's energy counter.".format(dE)
+            Thread {
+                runCatching {
+                    // If a charge ended shortly before we lost the car, this is that charge carrying on.
+                    val recent = ChargeLog.load().filter { it.end != null && it.end >= at - 15 * 60_000L }.maxByOrNull { it.end!! }
+                    if (recent != null) {
+                        ChargeLog.upsert(recent.copy(
+                            end = s.at, socEnd = soc.toInt(), kwhBattery = (recent.kwhBattery ?: 0.0) + dE,
+                            notes = (recent.notes + " " + gap).trim(),
+                        ))
+                        LocalLog.event("charge continued while disconnected: +%.1f kWh, now %.0f%%".format(dE, soc))
+                    } else {
+                        ChargeLog.upsert(entry)
+                        LocalLog.event("charge found while disconnected: %.0f→%.0f%%, +%.1f kWh".format(soc0, soc, dE))
+                        Alerts.offlineCharge(soc0, soc, dE)
+                    }
+                }
+            }.start()
         } else if (dE <= -1.0) {
             _state.update { it.copy(offlineDriveKwh = -dE) }
             LocalLog.event("battery used while disconnected: %.1f kWh (%.0f→%.0f%%)".format(-dE, soc0, soc))
@@ -363,7 +379,7 @@ object Dash {
     @Synchronized
     fun onGpsMeters(m: Double) {
         val st = _state.value
-        if (st.status != LinkStatus.LIVE) return
+        if (st.status != LinkStatus.LIVE || st.charging) return   // plugged in: any "distance" is GPS drift
         val km = m / 1000
         lastGpsAt = System.currentTimeMillis()
         // Persist the running GPS count every 100 m
@@ -449,28 +465,36 @@ object Dash {
         val kw = if (s.packV != null && s.currentA != null) s.packV * s.currentA / 1000 else null
 
         // Charging = current flowing in while the car is parked. Regen needs the car moving.
-        //  - GPS shows ~0 speed (fresh fix):        4 s of inflow is enough
-        //  - GPS on, no movement counted for 30 s:  20 s
-        //  - no GPS at all:                         90 s (long downhill regen can last 20+ s)
+        //  - GPS says ~0 speed (fresh fix):          4 s of inflow is enough
+        //  - GPS says > 9 km/h (fresh fix):          it's regen, never a charge
+        //  - otherwise, GPS on:                       20 s;   no GPS at all: 90 s
+        // Once charging, only the current decides when it ends: GPS drift at a charger
+        // (phone "moving" at 1–4 km/h) must not end a charge — that split the 23 Oct DC charge in four.
         val gpsOn = prev.gpsOn
-        val movingNow = now - lastGpsAt < 30_000
-        val parked = now - lastFixAt < 10_000 && (lastFixSpeed ?: 99f) < 0.5f && now - lastGpsAt > 15_000
+        val fixFresh = now - lastFixAt < 10_000
+        val drivingNow = fixFresh && (lastFixSpeed ?: 0f) > 2.5f
+        val parked = fixFresh && (lastFixSpeed ?: 99f) < 1.0f
         var charging = prev.charging
         if (kw != null) {
-            if (kw < -0.3) { if (negSince == 0L) negSince = now; posSince = 0 }
-            else if (kw > 0.3) { if (posSince == 0L) posSince = now; negSince = 0; inflowWh = 0.0 }
+            if (kw < -0.3) { if (negSince == 0L) negSince = now; posSince = 0; idleSince = 0 }
+            else if (kw > 0.3) { if (posSince == 0L) posSince = now; negSince = 0; inflowWh = 0.0; idleSince = 0 }
+            else {
+                // ~0 kW: charger stopped or car idle. Don't let an old inflow start a "charge" later.
+                if (idleSince == 0L) idleSince = now
+                if (now - idleSince > 5_000) { negSince = 0; inflowWh = 0.0 }
+            }
             val inflowFor = if (negSince > 0) now - negSince else 0L
             if (!charging && negSince > 0) {
                 val need = when {
+                    drivingNow -> Long.MAX_VALUE
                     parked -> 4_000L
-                    gpsOn && !movingNow -> 20_000L
-                    !gpsOn -> 90_000L
-                    else -> Long.MAX_VALUE        // GPS says we're moving: it's regen
+                    gpsOn -> 20_000L
+                    else -> 90_000L
                 }
                 if (inflowFor > need) charging = true
             }
             if (charging && posSince > 0 && now - posSince > 10_000) charging = false
-            if (charging && movingNow) charging = false
+            if (charging && idleSince > 0 && now - idleSince > 30_000) charging = false
         }
         val justStarted = charging && !prev.charging
         if (!charging && kw != null && kw < -0.3) inflowWh += -kw * 1000 * dtH
@@ -519,7 +543,15 @@ object Dash {
         var chargeDiscarded = false
         val charge: ChargeSession? = if (charging) {
             val base = if (old == null || !old.active) {
-                ChargeSession(if (negSince > 0) negSince else now, s.socPct, addedKwh = inflowWh / 1000)
+                val recent = lastRealCharge
+                val recentEnd = recent?.endedAt
+                if (recent != null && recentEnd != null && now - recentEnd < 10 * 60_000L) {
+                    // Picked up again within 10 min (charger paused, brief drop): same charge, same entry.
+                    recent.copy(endedAt = null, endSoc = null, addedKwh = recent.addedKwh + inflowWh / 1000)
+                } else {
+                    val start = if (negSince > 0 && now - negSince < 120_000) negSince else now
+                    ChargeSession(start, s.socPct, addedKwh = inflowWh / 1000)
+                }
             } else old
             if (justStarted) inflowWh = 0.0
             if (kw != null && kw < 0) base.copy(addedKwh = base.addedKwh + (-kw) * dtH, peakKw = maxOf(base.peakKw, -kw)) else base
