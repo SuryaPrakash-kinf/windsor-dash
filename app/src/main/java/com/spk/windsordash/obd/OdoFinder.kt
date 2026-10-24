@@ -151,7 +151,11 @@ object OdoFinder {
     fun cancel() {
         active = false
         save()
-        _state.value = _state.value.copy(running = false, finished = true, text = "Stopped. Progress is kept until you start a new search.")
+        _state.value = _state.value.copy(
+            running = false, finished = true,
+            text = if (cands.isEmpty()) "Stopped. Progress is kept until you start a new search."
+            else "Search stopped. Still checking ${cands.size} candidate(s) while you drive (needs GPS: open the app).",
+        )
     }
 
     fun dismiss() { _state.value = FinderState() }
@@ -182,7 +186,27 @@ object OdoFinder {
      * Returns a spec once one is confirmed by driving.
      */
     suspend fun step(elm: Elm327, odoKm: Double?): OdoSpec? {
-        if (!active || odoKm == null) return null
+        if (odoKm == null) return null
+        if (!active) {
+            // Search stopped, but candidates found so far keep being checked against GPS distance
+            // (a few reads every ~40 cycles) until one is confirmed or all are ruled out.
+            if (stage != 4 && cands.isNotEmpty() && cands.none { it.confirmed }) {
+                stepCount++
+                if (stepCount % 40 == 0L) {
+                    try {
+                        checkCandidates(elm, odoKm)?.let { return it }
+                        if (cands.isEmpty()) publish("The candidate(s) didn't rise with the distance driven — not the odometer.", finished = true)
+                        else publish("Checking ${cands.size} candidate(s): " + cands.first().let {
+                            "+%.1f km vs GPS +%.1f km".format(it.latestKm - it.valueKm, it.latestOdoKm - it.atOdoKm)
+                        }, finished = true)
+                        save()
+                    } finally {
+                        elm.query("ATH0", 300); elm.forgetTarget()
+                    }
+                }
+            }
+            return null
+        }
         stepCount++
         try {
             // Every ~40 steps, re-read candidates to see whether they track the GPS distance.

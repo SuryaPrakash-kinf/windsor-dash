@@ -12,8 +12,8 @@ android {
         applicationId = "com.spk.windsordash"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.9.3"
+        versionCode = 17
+        versionName = "0.9.4"
     }
 
     signingConfigs {
