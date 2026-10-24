@@ -27,11 +27,13 @@ data class Trip(
     val netWh: Double = 0.0,       // energy used minus regen
     val regenWh: Double = 0.0,
     val movingMs: Long = 0,        // time actually moving (stops excluded)
+    /** Energy used only while GPS was measuring distance — what Wh/km is calculated from. */
+    val gpsWh: Double = 0.0,
 ) {
     /** GPS when we have it (finer), else the car's odometer. */
     val km: Double get() = if (gpsKm >= 0.2) gpsKm else odoKm.toDouble()
     val distSource: String get() = if (gpsKm >= 0.2) "GPS" else if (odoKm > 0) "odometer" else "—"
-    val whPerKm: Double? get() = if (km >= 1) netWh / km else null
+    val whPerKm: Double? get() = if (km < 1) null else if (gpsKm >= 0.2) gpsWh / gpsKm else netWh / km
     val kwhPer100: Double? get() = whPerKm?.let { it / 10 }
     /** Average while moving — what most trip computers show. */
     val avgMovingKmh: Double? get() = if (km >= 0.5 && movingMs >= 60_000) km / (movingMs / 3_600_000.0) else null
@@ -174,6 +176,8 @@ object Dash {
         }
         refreshOdo(null)
         paused = PausedCharge.decode(prefs.getString("paused_charge", null))
+        prefs.edit().remove("lt_km").remove("lt_wh").apply()   // old lifetime average (was skewed by no-GPS energy)
+        refreshRunsEff()
         if (!prefs.contains("home_tariff")) prefs.edit().putFloat("home_tariff", 0f).apply()   // solar at home
         Alerts.init(ctx.applicationContext)
         CellWatch.init(ctx.applicationContext)
@@ -369,6 +373,7 @@ object Dash {
         _state.update { it.copy(run = null) }
         if (r.km < 0.5 || _state.value.status == LinkStatus.DEMO) return
         LocalLog.run(r)
+        refreshRunsEff()
         LocalLog.event("run: %.1f km, SoC %s→%s, top %.0f km/h".format(
             r.km, r.socStart?.toInt() ?: "?", r.socEnd?.toInt() ?: "?", r.topKmh))
     }
@@ -388,14 +393,6 @@ object Dash {
             prefs.edit().putFloat("odo_gps", prefs.getFloat("odo_gps", 0f) + gpsUnsaved.toFloat()).apply()
             gpsUnsaved = 0.0
         }
-        // Lifetime efficiency from GPS distance
-        if (whSinceOdo > 0) {
-            prefs.edit()
-                .putFloat("lt_km", prefs.getFloat("lt_km", 0f) + km.toFloat())
-                .putFloat("lt_wh", prefs.getFloat("lt_wh", 0f) + whSinceOdo.toFloat())
-                .apply()
-        }
-        whSinceOdo = 0.0
         val trip = st.trip
         if (trip != null) _state.update { it.copy(trip = trip.copy(gpsKm = trip.gpsKm + km)) }
         st.run?.let { r -> _state.update { it.copy(run = it.run?.copy(km = (it.run?.km ?: r.km) + km)) } }
@@ -439,11 +436,30 @@ object Dash {
         )
     )
 
-    /** Lifetime average used for range when the current trip is too short. */
-    private fun lifetimeWhKm(): Double? {
-        val km = prefs.getFloat("lt_km", 0f)
-        val wh = prefs.getFloat("lt_wh", 0f)
-        return if (km >= 20f) (wh / km).toDouble() else null
+    /**
+     * Efficiency from your recent completed runs (runs.csv): the latest runs adding up to ~150 km.
+     * Runs only count energy while GPS was measuring, so this matches what the car's own
+     * range estimate is based on: your recent driving.
+     */
+    @Volatile private var runsEff: Pair<Double, Double>? = null   // Wh/km, km covered
+
+    fun refreshRunsEff() {
+        Thread {
+            runCatching {
+                var km = 0.0; var wh = 0.0
+                // columns: start,end,minutes,soc_start,soc_end,km,top,avgMoving,avg,kwh_used,wh_per_km,regen
+                for (row in LocalLog.readRuns(60)) {
+                    val k = row.getOrNull(5)?.toDoubleOrNull() ?: continue
+                    val kwh = row.getOrNull(9)?.toDoubleOrNull() ?: continue
+                    if (k < 2 || kwh <= 0) continue
+                    val e = kwh * 1000 / k
+                    if (e < 50 || e > 300) continue          // clearly broken rows
+                    km += k; wh += kwh * 1000
+                    if (km >= 150) break
+                }
+                runsEff = if (km >= 20) (wh / km) to km else null
+            }
+        }.start()
     }
 
     @Synchronized
@@ -503,13 +519,17 @@ object Dash {
         var trip = prev.trip ?: Trip(now, s.odometerKm)
         if (justStarted && inflowWh > 0) {
             // The seconds before we recognised the charge were booked as regen: move them back.
-            trip = trip.copy(netWh = trip.netWh + inflowWh, regenWh = maxOf(0.0, trip.regenWh - inflowWh))
+            trip = trip.copy(netWh = trip.netWh + inflowWh, regenWh = maxOf(0.0, trip.regenWh - inflowWh),
+                gpsWh = trip.gpsWh + if (prev.gpsOn) inflowWh else 0.0)
             whSinceOdo += inflowWh
         }
         if (trip.startOdoKm == null && s.odometerKm != null) trip = trip.copy(startOdoKm = s.odometerKm)
         if (kw != null && !charging) {
             val wh = kw * 1000 * dtH
-            trip = trip.copy(netWh = trip.netWh + wh, regenWh = trip.regenWh + if (wh < 0) -wh else 0.0)
+            trip = trip.copy(
+                netWh = trip.netWh + wh, regenWh = trip.regenWh + if (wh < 0) -wh else 0.0,
+                gpsWh = trip.gpsWh + if (prev.gpsOn) wh else 0.0,   // no GPS → no distance → keep it out of Wh/km
+            )
             whSinceOdo += wh
         }
         // Moving time: GPS says we're moving (fix counted in the last 5 s);
@@ -523,19 +543,6 @@ object Dash {
         val odoStart = trip.startOdoKm
         if (odoNow != null && odoStart != null) trip = trip.copy(odoKm = odoNow - odoStart)
 
-        // Lifetime efficiency from odometer ticks — only when GPS isn't doing it
-        val gpsActive = now - lastGpsAt < 60_000
-        if (s.odometerKm != null && !gpsActive) {
-            val lo = lastOdo
-            if (lo != null && s.odometerKm > lo && s.odometerKm - lo < 50 && whSinceOdo > 0) {
-                prefs.edit()
-                    .putFloat("lt_km", prefs.getFloat("lt_km", 0f) + (s.odometerKm - lo))
-                    .putFloat("lt_wh", prefs.getFloat("lt_wh", 0f) + whSinceOdo.toFloat())
-                    .apply()
-            }
-            if (lo == null || s.odometerKm != lo) whSinceOdo = 0.0
-            lastOdo = s.odometerKm
-        }
 
         // Charge session
         val old = prev.charge
@@ -568,12 +575,13 @@ object Dash {
             }
         } else old
 
-        // Range
-        val tripEff = trip.whPerKm
-        val lifeEff = lifetimeWhKm()
+        // Range = energy left ÷ efficiency of your recent driving (last ~150 km of runs),
+        // or this trip once it's long enough, or a typical figure until there's data.
+        val tripEff = trip.whPerKm?.takeIf { trip.gpsKm >= 20 && it in 50.0..300.0 }
+        val recent = runsEff
         val (eff, src) = when {
-            trip.km >= 5 && tripEff != null && tripEff > 50 -> tripEff to "this trip"
-            lifeEff != null -> lifeEff to "your average"
+            tripEff != null -> tripEff to "this trip"
+            recent != null -> recent.first to "last %.0f km".format(recent.second)
             else -> DEFAULT_WH_KM to "typical"
         }
         val energy = s.energyLeftKwh
