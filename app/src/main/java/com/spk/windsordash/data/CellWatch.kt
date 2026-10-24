@@ -27,6 +27,39 @@ object CellWatch {
         fun total(c: Cond) = counts[c].orEmpty().values.sum()
     }
 
+    /** One reading taken when the pack is full and at rest (charge just ended, or first reading at ≥ 99 %). */
+    data class FullReading(val at: Long, val soc: Int, val spreadMv: Int, val maxId: Int?, val maxMv: Int, val minId: Int?, val minMv: Int) {
+        fun encode() = listOf(at, soc, spreadMv, maxId ?: "", maxMv, minId ?: "", minMv).joinToString("|")
+        companion object {
+            fun decode(s: String) = runCatching {
+                val p = s.split('|')
+                FullReading(p[0].toLong(), p[1].toInt(), p[2].toInt(), p[3].toIntOrNull(), p[4].toInt(), p[5].toIntOrNull(), p[6].toInt())
+            }.getOrNull()
+        }
+    }
+
+    private val _full = MutableStateFlow<List<FullReading>>(emptyList())
+    val fullHistory: StateFlow<List<FullReading>> = _full
+    private var lastFullAt = 0L
+
+    /**
+     * Record the cell spread at full charge, at rest. Called with each reading; keeps one entry per
+     * full charge (≥ 3 h apart): the first moment we see ≥ 99 % with the pack resting (|kW| < 1).
+     */
+    @Synchronized
+    fun maybeRecordFull(soc: Double?, kw: Double?, maxId: Int?, maxMv: Int?, minId: Int?, minMv: Int?) {
+        if (!::prefs.isInitialized || soc == null || soc < 99 || kw == null || kotlin.math.abs(kw) >= 1) return
+        if (maxMv == null || minMv == null) return
+        val now = System.currentTimeMillis()
+        if (now - lastFullAt < 3 * 3_600_000L) return
+        lastFullAt = now
+        val r = FullReading(now, soc.toInt(), maxMv - minMv, maxId, maxMv, minId, minMv)
+        val list = (_full.value + r).takeLast(60)
+        _full.value = list
+        prefs.edit().putString("full", list.joinToString("\n") { it.encode() }).putLong("full_last", now).apply()
+        LocalLog.event("full charge: spread ${r.spreadMv} mV (highest #${maxId ?: "?"} $maxMv mV, lowest #${minId ?: "?"} $minMv mV) at ${r.soc}%")
+    }
+
     private lateinit var prefs: SharedPreferences
     private val counts = Cond.entries.associateWith { mutableMapOf<Int, Int>() }
     private var since = 0L
@@ -38,6 +71,8 @@ object CellWatch {
         if (::prefs.isInitialized) return
         prefs = ctx.getSharedPreferences("cellwatch", Context.MODE_PRIVATE)
         since = prefs.getLong("since", 0)
+        _full.value = prefs.getString("full", "").orEmpty().split('\n').mapNotNull { if (it.isBlank()) null else FullReading.decode(it) }
+        lastFullAt = prefs.getLong("full_last", 0)
         for (c in Cond.entries) {
             prefs.getString(c.name, "").orEmpty().split(',').filter { it.contains('=') }.forEach {
                 val (k, v) = it.split('=')

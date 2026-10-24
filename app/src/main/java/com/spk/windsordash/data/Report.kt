@@ -119,6 +119,12 @@ tr:last-child td{border-bottom:0}.soc{color:var(--teal);font-weight:600}.dim{col
             }
             sb.append("</table></div><div class=note>“Into battery” is measured by the car; “Billed” is what you entered from the charger or bill.</div>")
         }
+        val full = CellWatch.fullHistory.value
+        if (full.isNotEmpty()) {
+            sb.append("<h2>Cell spread at full charge</h2><div class=wrap><table><tr><th>Date</th><th>SoC</th><th>Spread</th><th>Highest cell</th><th>Lowest cell</th></tr>")
+            for (f in full.reversed()) sb.append("<tr><td>${esc(SimpleDateFormat("d MMM HH:mm", Locale.getDefault()).format(Date(f.at)))}</td><td>${f.soc} %</td><td class=soc>${f.spreadMv} mV</td><td>#${f.maxId ?: "?"} · ${f.maxMv} mV</td><td>#${f.minId ?: "?"} · ${f.minMv} mV</td></tr>")
+            sb.append("</table></div><div class=note>Taken at rest at 99–100 %. If balancing works, the spread shrinks over successive full charges. Near full, LFP voltage rises steeply, so spreads of 50–150 mV here are normal and fall to a few mV once driving.</div>")
+        }
         sb.append("</body></html>")
         return sb.toString()
     }

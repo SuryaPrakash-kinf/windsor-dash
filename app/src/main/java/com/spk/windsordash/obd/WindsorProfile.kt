@@ -137,9 +137,12 @@ object WindsorProfile {
                 if (cycle % 15 == 7) onRaw(readRawSet(elm, BMS_TX, BMS_RX, RESEARCH_BMS) + readRawSet(elm, THERM_TX, THERM_RX, RESEARCH_THERM))
                 // Full sweep of D0xx (BMS) and A0xx (thermal) every 10 min, 8 DIDs per cycle so
                 // live readings and energy totals keep flowing (~70 s per sweep).
-                if (sweepQueue.isEmpty() && now - lastSweepAt > 10 * 60_000L) {
+                // Near the top of a charge (where LFP balancing happens) sweep every 5 min, else every 10.
+                val topOfCharge = (s.socPct ?: 0.0) >= 97 || (s.currentA ?: 0.0) < -1
+                val every = if (topOfCharge) 5 * 60_000L else 10 * 60_000L
+                if (sweepQueue.isEmpty() && now - lastSweepAt > every) {
                     lastSweepAt = now
-                    (0xD000..0xD0FF).forEach { sweepQueue.add(BMS_TX to "%04X".format(it)) }
+                    (0xD000..0xD2FF).forEach { sweepQueue.add(BMS_TX to "%04X".format(it)) }
                     (0xA000..0xA0FF).forEach { sweepQueue.add(THERM_TX to "%04X".format(it)) }
                 }
                 if (sweepQueue.isNotEmpty()) {

@@ -875,6 +875,24 @@ private fun CellWatchPanel() {
                 )
             }
         }
+        val full by com.spk.windsordash.data.CellWatch.fullHistory.collectAsStateWithLifecycle()
+        Text("Spread at full charge (at rest)", color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+        if (full.isEmpty()) Text("Recorded after your next charge to 99–100 % (dongle connected before you drive off).", color = Dim, fontSize = 12.sp)
+        for (f in full.takeLast(8).reversed()) Text(
+            java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(f.at)) +
+                "  ·  ${f.spreadMv} mV  ·  high #${f.maxId ?: "?"} ${f.maxMv}  ·  low #${f.minId ?: "?"} ${f.minMv}",
+            color = Dim, fontSize = 12.sp
+        )
+        if (full.size >= 3) {
+            val first = full.first().spreadMv; val last = full.last().spreadMv
+            Text(
+                when {
+                    last < first * 0.8 -> "Shrinking ($first → $last mV): balancing is evening the cells out."
+                    last > first * 1.2 -> "Growing ($first → $last mV): worth keeping an eye on."
+                    else -> "Steady (about $last mV)."
+                }, color = Teal, fontSize = 12.sp
+            )
+        }
         Text(
             "A cell that's lowest most of the time under load, or highest when full, is the one to watch over months. " +
                 "Small spreads (under ~20 mV) make this a curiosity, not a problem.",

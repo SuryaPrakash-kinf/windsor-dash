@@ -622,6 +622,7 @@ object Dash {
 
         if (prev.status == LinkStatus.LIVE && s.maxCellId != null) {
             CellWatch.record(s.maxCellId, s.minCellId, kw, charging, s.socPct)
+            if (!charging) CellWatch.maybeRecordFull(s.socPct, kw, s.maxCellId, s.maxCellMv, s.minCellId, s.minCellMv)
         }
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
