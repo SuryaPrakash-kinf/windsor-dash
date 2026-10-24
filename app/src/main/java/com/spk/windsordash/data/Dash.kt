@@ -150,6 +150,10 @@ object Dash {
     private var lastFixAt = 0L
     private var lastFixSpeed: Float? = null
     private var idleSince = 0L
+    // Guard for a saved car-odometer location: it must keep pace with GPS distance.
+    private var gpsTotalKm = 0.0
+    private var carRefVal: Int? = null
+    private var carRefGps = 0.0
     private var inflowWh = 0.0          // energy flowing in before we decided it's a charge
     private var paused: PausedCharge? = null
     private var offlineChecked = false
@@ -387,6 +391,7 @@ object Dash {
         if (st.status != LinkStatus.LIVE || st.charging) return   // plugged in: any "distance" is GPS drift
         val km = m / 1000
         lastGpsAt = System.currentTimeMillis()
+        gpsTotalKm += km
         // Persist the running GPS count every 100 m
         gpsUnsaved += km
         if (gpsUnsaved >= 0.1) {
@@ -592,8 +597,25 @@ object Dash {
             sample = s, powerKw = kw, charging = charging, trip = trip, charge = charge,
             rangeKm = range, effWhKm = eff, effSource = src, parked = parked,
         )
+        // A saved car-odometer location must move when the car moves. If GPS has measured 3 km
+        // and the car's value hasn't changed (fixed number, or reads failing), it isn't the odometer.
+        if (prev.status == LinkStatus.LIVE && prev.odoSpec != null) {
+            val v = s.odometerKm
+            when {
+                v != null && v != carRefVal -> { carRefVal = v; carRefGps = gpsTotalKm }
+                gpsTotalKm - carRefGps >= 3.0 -> {
+                    val spec = prev.odoSpec
+                    saveOdoSpec(null)
+                    carRefVal = null
+                    LocalLog.event("odometer location dropped: no change over 3 km of driving (${spec.describe()})")
+                    Alerts.odometerDropped()
+                    refreshOdo(null)
+                }
+            }
+        }
+
         // Demo data must never touch the real odometer.
-        if (prev.status != LinkStatus.DEMO && s.odometerKm != null &&
+        if (prev.status != LinkStatus.DEMO && s.odometerKm != null && _state.value.odoSpec != null &&
             (s.odometerKm != prev.sample.odometerKm || prev.odoSource != OdoSource.CAR)
         ) {
             refreshOdo(s.odometerKm)

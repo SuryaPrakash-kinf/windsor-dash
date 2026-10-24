@@ -54,6 +54,11 @@ object Alerts {
         "+%.1f kWh while the dongle was disconnected. Added to the charging log as Home AC — edit it if that's wrong.".format(kwh)
     )
 
+    fun odometerDropped() = post(
+        105, "Odometer location removed",
+        "The value the app was reading didn't change while you drove 3 km, so it isn't the odometer. Back to GPS tracking — tap Correct with your dashboard reading."
+    )
+
     fun linkPausedWhileCharging() = post(
         103, "Car stopped answering while charging",
         "Probably locked or asleep. Charging continues; the totals are filled in from the battery when you reconnect."

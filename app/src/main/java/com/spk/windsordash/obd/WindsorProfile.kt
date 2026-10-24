@@ -127,7 +127,10 @@ object WindsorProfile {
                 val km = readOdometer(elm, spec)
                 if (km != null && km >= 1 && km < 2_000_000) {
                     s = s.copy(odometerKm = km.toInt()); odoFails = 0
-                } else odoFails++
+                } else {
+                    odoFails++
+                    s = s.copy(odometerKm = null)   // never show a stale value as if it were current
+                }
             }
 
             // Research capture: raw bytes from candidate DIDs so the real pack temperature
