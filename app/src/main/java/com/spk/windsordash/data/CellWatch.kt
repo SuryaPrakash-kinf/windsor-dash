@@ -41,20 +41,27 @@ object CellWatch {
     private val _full = MutableStateFlow<List<FullReading>>(emptyList())
     val fullHistory: StateFlow<List<FullReading>> = _full
     private var lastFullAt = 0L
+    private var lastReplaceAt = 0L
 
     /**
      * Record the cell spread at full charge, at rest. Called with each reading; keeps one entry per
      * full charge (≥ 3 h apart): the first moment we see ≥ 99 % with the pack resting (|kW| < 1).
      */
     @Synchronized
-    fun maybeRecordFull(soc: Double?, kw: Double?, maxId: Int?, maxMv: Int?, minId: Int?, minMv: Int?) {
-        if (!::prefs.isInitialized || soc == null || soc < 99 || kw == null || kotlin.math.abs(kw) >= 1) return
+    fun maybeRecordFull(soc: Double?, currentA: Double?, maxId: Int?, maxMv: Int?, minId: Int?, minMv: Int?) {
+        // At rest = almost no current. (Pack voltage isn't usable here: with the car on but not in READY
+        // the contactors are open and the BMS reports ~4 V, so kW can't be worked out.)
+        if (!::prefs.isInitialized || soc == null || soc < 99 || currentA == null || kotlin.math.abs(currentA) >= 3) return
         if (maxMv == null || minMv == null) return
         val now = System.currentTimeMillis()
-        if (now - lastFullAt < 3 * 3_600_000L) return
-        lastFullAt = now
+        val within = now - lastFullAt < 3 * 3_600_000L
+        // Same full charge (within 3 h): replace the earlier reading with this more-rested one, at most every 10 min.
+        if (within && now - lastReplaceAt < 10 * 60_000L) return
         val r = FullReading(now, soc.toInt(), maxMv - minMv, maxId, maxMv, minId, minMv)
-        val list = (_full.value + r).takeLast(60)
+        val base = if (within) _full.value.dropLast(1) else _full.value
+        if (!within) lastFullAt = now
+        lastReplaceAt = now
+        val list = (base + r).takeLast(60)
         _full.value = list
         prefs.edit().putString("full", list.joinToString("\n") { it.encode() }).putLong("full_last", now).apply()
         LocalLog.event("full charge: spread ${r.spreadMv} mV (highest #${maxId ?: "?"} $maxMv mV, lowest #${minId ?: "?"} $minMv mV) at ${r.soc}%")

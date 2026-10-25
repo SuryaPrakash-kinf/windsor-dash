@@ -653,7 +653,7 @@ object Dash {
             // Spread at full is only comparable at rest: 10 min after charging stopped
             // (cells relax from their end-of-charge peak), or straight away if we connect to an already-full car.
             val rested = if (chargeEndedAt > connectedAt) now - chargeEndedAt >= 10 * 60_000L else true
-            if (!charging && rested) CellWatch.maybeRecordFull(s.socPct, kw, s.maxCellId, s.maxCellMv, s.minCellId, s.minCellMv)
+            if (!charging && rested) CellWatch.maybeRecordFull(s.socPct, s.currentA, s.maxCellId, s.maxCellMv, s.minCellId, s.minCellMv)
         }
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
