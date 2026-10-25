@@ -54,7 +54,7 @@ object LocalLog {
         "time,status,soc_pct,soh_pct,energy_left_kwh,pack_v,current_a,power_kw," +
             "max_cell_mv,max_cell_no,min_cell_mv,min_cell_no,cell_spread_mv,a021_unverified,aux_12v,odometer_km," +
             "odo_shown_km,odo_source,trip_km,trip_dist_source,charging,parked,gps_on,speed_kmh," +
-            "d02b_raw,d02e_raw,d016_raw,d036_raw"
+            "d02b_raw,d02e_raw,d016_raw,d036_raw,d064_raw,d065_raw"
     private const val EVENTS_HEADER = "time,event"
 
     private fun prefs() = appCtx.getSharedPreferences("dash", Context.MODE_PRIVATE)
@@ -142,7 +142,7 @@ object LocalLog {
                         s.a021Raw, s.aux12V?.r(2), s.odometerKm,
                         st.odoKm?.r(1), st.odoSource.name.lowercase(), st.trip?.km?.r(2), st.trip?.distSource,
                         if (st.charging) 1 else 0, if (st.parked) 1 else 0, if (st.gpsOn) 1 else 0, st.speedKmh?.r(0),
-                        s.d02bRaw, s.d02eRaw, s.d016Raw, s.d036Raw,
+                        s.d02bRaw, s.d02eRaw, s.d016Raw, s.d036Raw, s.d064Raw, s.d065Raw,
                     ).joinToString(",") { it?.toString() ?: "" }
                 )
                 w.newLine()

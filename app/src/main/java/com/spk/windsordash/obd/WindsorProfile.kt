@@ -29,6 +29,9 @@ data class Sample(
     val d02eRaw: Int? = null,   // fast-rising: motor/inverter?
     val d016Raw: Int? = null,   // tracks outside air: coolant/inlet?
     val d036Raw: Int? = null,   // fast-rising: drive unit?
+    /** Being confirmed: D064 looks like the car's minutes-to-full, D065 its charge power limit (W). */
+    val d064Raw: Int? = null,
+    val d065Raw: Int? = null,
     val aux12V: Double? = null,
     val odometerKm: Int? = null,
 )
@@ -111,6 +114,8 @@ object WindsorProfile {
                     d02eRaw = elm.readDid("D02E", 1)?.get(0) ?: s.d02eRaw,
                     d016Raw = elm.readDid("D016", 1)?.get(0) ?: s.d016Raw,
                     d036Raw = elm.readDid("D036", 1)?.get(0) ?: s.d036Raw,
+                    d064Raw = elm.readDid("D064", 2)?.u16() ?: s.d064Raw,
+                    d065Raw = elm.readDid("D065", 2)?.u16() ?: s.d065Raw,
                 )
             }
 
