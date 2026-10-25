@@ -41,7 +41,6 @@ object CellWatch {
     private val _full = MutableStateFlow<List<FullReading>>(emptyList())
     val fullHistory: StateFlow<List<FullReading>> = _full
     private var lastFullAt = 0L
-    private var lastReplaceAt = 0L
 
     /**
      * Record the cell spread at full charge, at rest. Called with each reading; keeps one entry per
@@ -55,13 +54,12 @@ object CellWatch {
         if (maxMv == null || minMv == null) return
         val now = System.currentTimeMillis()
         val within = now - lastFullAt < 3 * 3_600_000L
-        // Same full charge (within 3 h): replace the earlier reading with this more-rested one, at most every 10 min.
-        if (within && now - lastReplaceAt < 10 * 60_000L) return
+        // One reading per full charge: the first proper at-rest one wins. (Replacing it later picked up
+        // readings taken while coasting in city traffic — 134 mV became 3 mV on 25 Oct.)
+        if (within) return
         val r = FullReading(now, soc.toInt(), maxMv - minMv, maxId, maxMv, minId, minMv)
-        val base = if (within) _full.value.dropLast(1) else _full.value
-        if (!within) lastFullAt = now
-        lastReplaceAt = now
-        val list = (base + r).takeLast(60)
+        lastFullAt = now
+        val list = (_full.value + r).takeLast(60)
         _full.value = list
         prefs.edit().putString("full", list.joinToString("\n") { it.encode() }).putLong("full_last", now).apply()
         LocalLog.event("full charge: spread ${r.spreadMv} mV (highest #${maxId ?: "?"} $maxMv mV, lowest #${minId ?: "?"} $minMv mV) at ${r.soc}%")
@@ -78,7 +76,10 @@ object CellWatch {
         if (::prefs.isInitialized) return
         prefs = ctx.getSharedPreferences("cellwatch", Context.MODE_PRIVATE)
         since = prefs.getLong("since", 0)
-        _full.value = prefs.getString("full", "").orEmpty().split('\n').mapNotNull { if (it.isBlank()) null else FullReading.decode(it) }
+        // Readings under 20 mV at 99–100 % were taken while driving (0.9.9 bug), not at rest: drop them.
+        _full.value = prefs.getString("full", "").orEmpty().split('\n')
+            .mapNotNull { if (it.isBlank()) null else FullReading.decode(it) }
+            .filter { it.spreadMv >= 20 }
         lastFullAt = prefs.getLong("full_last", 0)
         for (c in Cond.entries) {
             prefs.getString(c.name, "").orEmpty().split(',').filter { it.contains('=') }.forEach {

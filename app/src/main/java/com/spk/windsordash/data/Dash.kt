@@ -149,6 +149,7 @@ object Dash {
     @Volatile private var lastRealCharge: ChargeSession? = null
     private var chargeEndedAt = 0L          // when charging last stopped (for 'at rest' readings)
     private var connectedAt = 0L
+    private var quietSince = 0L             // current within ±3 A continuously since
     private var lastFixAt = 0L
     private var lastFixSpeed: Float? = null
     private var idleSince = 0L
@@ -653,7 +654,16 @@ object Dash {
             // Spread at full is only comparable at rest: 10 min after charging stopped
             // (cells relax from their end-of-charge peak), or straight away if we connect to an already-full car.
             val rested = if (chargeEndedAt > connectedAt) now - chargeEndedAt >= 10 * 60_000L else true
-            if (!charging && rested) CellWatch.maybeRecordFull(s.socPct, s.currentA, s.maxCellId, s.maxCellMv, s.minCellId, s.minCellMv)
+            // Truly parked: not in a drive, no GPS movement for 2 min, and current within ±3 A for 2 min.
+            // (City driving at 99–100 % can coast near 0 A — that must not count as rest.)
+            val a = s.currentA
+            if (a != null && kotlin.math.abs(a) < 3) { if (quietSince == 0L) quietSince = now } else quietSince = 0L
+            val parkedRest = _state.value.run == null && now - lastGpsAt > 120_000 &&
+                quietSince > 0 && now - quietSince >= 120_000
+            // Or the very first reading after connecting to a car that's already sitting full.
+            val firstReading = now - connectedAt < 30_000 && quietSince > 0
+            if (!charging && rested && (parkedRest || firstReading))
+                CellWatch.maybeRecordFull(s.socPct, s.currentA, s.maxCellId, s.maxCellMv, s.minCellId, s.minCellMv)
         }
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
