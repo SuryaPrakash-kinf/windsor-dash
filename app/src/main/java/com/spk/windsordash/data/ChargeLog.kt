@@ -99,7 +99,11 @@ object ChargeLog {
         upsert(
             if (old == null) e else e.copy(
                 type = if (old.type != ChargerType.UNKNOWN) old.type else e.type,
-                kwhBilled = old.kwhBilled, costInr = old.costInr, station = old.station,
+                kwhBilled = old.kwhBilled,
+                // Home charging at your tariff: keep the cost in step with the (possibly merged) kWh.
+                costInr = if (old.type == ChargerType.HOME_AC && old.kwhBilled == null && old.costInr != null)
+                    (Dash.homeTariff ?: 0.0) * e.kwhBattery!! else old.costInr,
+                station = old.station,
                 notes = old.notes.ifBlank { e.notes },
             )
         )

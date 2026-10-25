@@ -146,7 +146,9 @@ object Dash {
     private var lastAt = 0L
     private var negSince = 0L
     private var posSince = 0L
-    private var lastRealCharge: ChargeSession? = null
+    @Volatile private var lastRealCharge: ChargeSession? = null
+    private var chargeEndedAt = 0L          // when charging last stopped (for 'at rest' readings)
+    private var connectedAt = 0L
     private var lastFixAt = 0L
     private var lastFixSpeed: Float? = null
     private var idleSince = 0L
@@ -214,7 +216,7 @@ object Dash {
         if (dE >= 1.0 && dSoc >= 2) {
             val tariff = homeTariff
             val entry = ChargeEntry(
-                id = at + 1, start = at, end = s.at, type = ChargerType.HOME_AC,
+                id = at, start = at, end = s.at, type = ChargerType.HOME_AC,
                 socStart = soc0.toInt(), socEnd = soc.toInt(), kwhBattery = dE,
                 costInr = tariff?.let { it * dE }, odometerKm = _state.value.odoKm?.toInt(), auto = true,
                 notes = "Found after the fact: charged while the dongle was disconnected, between " +
@@ -235,6 +237,8 @@ object Dash {
                         LocalLog.event("charge continued while disconnected: +%.1f kWh, now %.0f%%".format(dE, soc))
                     } else {
                         ChargeLog.upsert(entry)
+                        // If charging carries on now (top-off), it continues this same entry.
+                        lastRealCharge = ChargeSession(at, soc0, dE, 0.0, endedAt = s.at, endSoc = soc)
                         LocalLog.event("charge found while disconnected: %.0f→%.0f%%, +%.1f kWh".format(soc0, soc, dE))
                         Alerts.offlineCharge(soc0, soc, dE)
                     }
@@ -644,7 +648,12 @@ object Dash {
 
         if (prev.status == LinkStatus.LIVE && s.maxCellId != null) {
             CellWatch.record(s.maxCellId, s.minCellId, kw, charging, s.socPct)
-            if (!charging) CellWatch.maybeRecordFull(s.socPct, kw, s.maxCellId, s.maxCellMv, s.minCellId, s.minCellMv)
+            if (prev.charging && !charging) chargeEndedAt = now
+            if (connectedAt == 0L) connectedAt = now
+            // Spread at full is only comparable at rest: 10 min after charging stopped
+            // (cells relax from their end-of-charge peak), or straight away if we connect to an already-full car.
+            val rested = if (chargeEndedAt > connectedAt) now - chargeEndedAt >= 10 * 60_000L else true
+            if (!charging && rested) CellWatch.maybeRecordFull(s.socPct, kw, s.maxCellId, s.maxCellMv, s.minCellId, s.minCellMv)
         }
         if (prev.status != LinkStatus.DEMO) {
             LocalLog.sample(s, prev.status, kw, _state.value)
@@ -662,6 +671,7 @@ object Dash {
 
     fun onDisconnected() {
         finishRun(_state.value.run)
+        connectedAt = 0L
         if (_state.value.status == LinkStatus.LIVE) saveLastSeen(_state.value.sample)
         offlineChecked = false
         lastAt = 0; negSince = 0; posSince = 0
