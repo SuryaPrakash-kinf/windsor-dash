@@ -453,6 +453,40 @@ object Dash {
      */
     @Volatile private var runsEff: Pair<Double, Double>? = null   // Wh/km, km covered
 
+    /*
+     * Rolling efficiency over the last 10 minutes of *driving* (time stopped doesn't push old
+     * driving out of the window). Points are cumulative (moving ms, GPS km, Wh) every ~5 s.
+     */
+    private const val WINDOW_MS = 10 * 60_000L
+    private val window = ArrayDeque<Triple<Long, Double, Double>>()
+    private var cumMoving = 0L; private var cumKm = 0.0; private var cumWh = 0.0
+    private var lastWindowPush = 0L
+    /** Last rolling figure (kept across stops and reconnects): Wh/km, km it covers, when. */
+    private var lastWindowEff: Triple<Double, Double, Long>? = null
+
+    private fun updateWindow(prevTrip: Trip?, trip: Trip, now: Long) {
+        val same = prevTrip != null && prevTrip.startedAt == trip.startedAt
+        val dMs = (trip.movingMs - if (same) prevTrip!!.movingMs else 0L).coerceAtLeast(0)
+        val dKm = (trip.gpsKm - if (same) prevTrip!!.gpsKm else 0.0).coerceAtLeast(0.0)
+        val dWh = trip.gpsWh - if (same) prevTrip!!.gpsWh else 0.0
+        if (dMs == 0L && dKm == 0.0 && dWh == 0.0) return
+        cumMoving += dMs; cumKm += dKm; cumWh += dWh
+        if (now - lastWindowPush < 5_000) return
+        lastWindowPush = now
+        window.addLast(Triple(cumMoving, cumKm, cumWh))
+        while (window.size > 2 && cumMoving - window[1].first >= WINDOW_MS) window.removeFirst()
+        val first = window.first()
+        val km = cumKm - first.second
+        val wh = cumWh - first.third
+        if (km >= 2.0) {
+            val e = wh / km
+            if (e in 40.0..350.0) {
+                lastWindowEff = Triple(e, km, now)
+                if (::prefs.isInitialized) prefs.edit().putString("win_eff", "$e|$km|$now").apply()
+            }
+        }
+    }
+
     fun refreshRunsEff() {
         Thread {
             runCatching {
@@ -585,11 +619,17 @@ object Dash {
             }
         } else old
 
-        // Range = energy left ÷ efficiency of your recent driving (last ~150 km of runs),
-        // or this trip once it's long enough, or a typical figure until there's data.
+        updateWindow(prev.trip, trip, now)
+        // Range = energy left ÷ how you've driven in the last 10 min of driving (needs ≥ 2 km in it).
+        // Before that: this trip once it's long enough, then recent runs, then a typical figure.
         val tripEff = trip.whPerKm?.takeIf { trip.gpsKm >= 20 && it in 50.0..300.0 }
         val recent = runsEff
+        val win = lastWindowEff ?: prefs.getString("win_eff", null)?.split('|')?.let { p ->
+            runCatching { Triple(p[0].toDouble(), p[1].toDouble(), p[2].toLong()) }.getOrNull()
+        }?.also { lastWindowEff = it }
         val (eff, src) = when {
+            win != null && now - win.third < 3 * 86_400_000L ->
+                win.first to (if (now - win.third < 60_000) "last 10 min driving" else "last drive, %.0f km".format(win.second))
             tripEff != null -> tripEff to "this trip"
             recent != null -> recent.first to "last %.0f km".format(recent.second)
             else -> DEFAULT_WH_KM to "typical"
