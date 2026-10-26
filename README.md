@@ -66,3 +66,15 @@ Range = energy left ÷ efficiency (this trip once ≥ 5 km, otherwise your lifet
 
 ## Build locally
 Android Studio (Ladybug or newer): open the folder and press Run. CLI: `gradle assembleRelease` (Gradle 8.10+, JDK 17, Android SDK 35).
+
+## All 98 cells (0.9.11)
+
+The BMS broadcasts every cell voltage on CAN without being asked: ids 0x5A1–0x5B8 carry 4 cells each,
+0x5BB carries cells 97–98. Each cell is a 16-bit word, top nibble a slot tag (2/4/6/8), low 12 bits mV.
+The app listens (ELM `ATMA`, mask 7E0 / filter 5A0) for ~1.6 s about every 30 polls, checks all 98 cells
+are present and that their sum matches pack voltage within 3 %, and logs them to `cells-<date>.csv`
+(at most once a minute). Read-only: nothing is sent to the car.
+
+With research capture on and the car moving, the app also listens to one CAN id band at a time
+(0x000–0x7FF in 8 bands) and logs what it hears as `BUS` rows in `raw-<date>.csv`, alongside the
+app odometer and GPS speed, to look for a broadcast distance counter.

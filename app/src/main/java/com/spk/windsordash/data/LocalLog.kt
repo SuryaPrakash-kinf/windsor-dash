@@ -130,6 +130,7 @@ object LocalLog {
 
     fun sample(s: Sample, status: LinkStatus, powerKw: Double?, st: DashState) {
         if (!enabled || !::dir.isInitialized) return
+        cells(s, powerKw, st.charging)
         io.execute {
             runCatching {
                 val w = writerFor(s.at)
@@ -265,7 +266,7 @@ object LocalLog {
         io.execute { purge() }
     }
 
-    private val datedName = Regex("^(samples|raw)-(\\d{4}-\\d{2}-\\d{2}).*\\.csv$")
+    private val datedName = Regex("^(samples|raw|cells)-(\\d{4}-\\d{2}-\\d{2}).*\\.csv$")
 
     /** Deletes dated log files older than [keepDays], in app storage and in the chosen folder. */
     private fun purge() {
@@ -290,11 +291,11 @@ object LocalLog {
     }
 
     /** Appends raw DID reads to raw-<date>.csv with the pack state at that moment. */
-    fun raw(reads: List<com.spk.windsordash.obd.RawRead>, s: Sample, powerKw: Double?) {
+    fun raw(reads: List<com.spk.windsordash.obd.RawRead>, s: Sample, powerKw: Double?, odoKm: Double? = null, speedKmh: Double? = null) {
         if (reads.isEmpty() || !::dir.isInitialized) return
         val ts = stamp.format(Date())
         val d = day.format(Date())
-        val ctxCols = listOf(s.socPct, s.packV?.r(1), s.currentA?.r(1), powerKw?.r(2), s.maxCellMv, s.minCellMv)
+        val ctxCols = listOf(s.socPct, s.packV?.r(1), s.currentA?.r(1), powerKw?.r(2), s.maxCellMv, s.minCellMv, odoKm?.r(3), speedKmh?.r(1))
             .joinToString(",") { it?.toString() ?: "" }
         io.execute {
             runCatching {
@@ -305,7 +306,31 @@ object LocalLog {
         }
     }
 
-    private const val RAW_HEADER = "time,ecu,did,hex,sweep,soc_pct,pack_v,current_a,power_kw,max_cell_mv,min_cell_mv"
+    private var lastCellsLogged = 0L
+
+    /** All 98 cells to cells-<date>.csv, at most once a minute (and only when a fresh broadcast was heard). */
+    fun cells(s: Sample, powerKw: Double?, charging: Boolean) {
+        val at = s.cellsAt ?: return
+        val cells = s.cellsMv ?: return
+        if (!::dir.isInitialized || at == lastCellsLogged || at - lastCellsLogged < 60_000) return
+        lastCellsLogged = at
+        val ts = stamp.format(Date(at))
+        val d = day.format(Date(at))
+        val line = "$ts,${s.socPct ?: ""},${s.currentA?.r(1) ?: ""},${powerKw?.r(2) ?: ""},${if (charging) 1 else 0}," +
+            "${cells.max() - cells.min()},${cells.indexOf(cells.max()) + 1},${cells.indexOf(cells.min()) + 1}," + cells.joinToString(",")
+        io.execute {
+            runCatching {
+                val (w, pfd) = openAppend("cells-$d.csv", CELLS_HEADER)
+                w.use { it.write(line); it.newLine() }
+                runCatching { pfd?.close() }
+            }
+        }
+    }
+
+    private val CELLS_HEADER = "time,soc_pct,current_a,power_kw,charging,spread_mv,max_cell,min_cell," +
+        (1..com.spk.windsordash.obd.WindsorProfile.CELLS).joinToString(",") { "c$it" }
+
+    private const val RAW_HEADER = "time,ecu,did,hex,sweep,soc_pct,pack_v,current_a,power_kw,max_cell_mv,min_cell_mv,odo_km,gps_kmh"
 
     fun flush() = io.execute { runCatching { writer?.flush() } }
 

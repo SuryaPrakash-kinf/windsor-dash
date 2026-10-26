@@ -34,6 +34,9 @@ data class Sample(
     val d065Raw: Int? = null,
     val aux12V: Double? = null,
     val odometerKm: Int? = null,
+    /** All 98 cell voltages (mV, cell 1 first), heard on the car's own CAN broadcast. */
+    val cellsMv: List<Int>? = null,
+    val cellsAt: Long? = null,
 )
 
 /**
@@ -68,6 +71,7 @@ object WindsorProfile {
         odoSpec: () -> OdoSpec?,
         between: suspend () -> Unit = {},
         research: () -> Boolean = { false },
+        busSniff: () -> Boolean = { false },
         onRaw: (List<RawRead>) -> Unit = {},
         emit: (Sample) -> Unit,
     ) {
@@ -77,6 +81,8 @@ object WindsorProfile {
         var cycle = 0
         var misses = 0
         var odoFails = 0
+        var cellFails = 0
+        var busBand = 0
         while (currentCoroutineContext().isActive) {
             between()
             var s = last.copy(at = System.currentTimeMillis())
@@ -136,6 +142,28 @@ object WindsorProfile {
                     odoFails++
                     s = s.copy(odometerKm = null)   // never show a stale value as if it were current
                 }
+            }
+
+            // All 98 cells: listen to the BMS broadcast for ~1.6 s about every 30 cycles.
+            // If the adapter never hears it (some clones can't monitor), back off to every ~5 min.
+            val cellEvery = if (cellFails >= 3) 300 else 30
+            if (gotAny && cycle % cellEvery == 17) {
+                val frames = elm.monitor(CellBroadcast.MASK, CellBroadcast.FILTER, 1600)
+                val cells = CellBroadcast.decode(frames, s.packV)
+                if (cells != null) { s = s.copy(cellsMv = cells, cellsAt = System.currentTimeMillis()); cellFails = 0 }
+                else cellFails++
+            }
+
+            // Bus sniff (research, while driving): everything the car broadcasts, one id band
+            // (0x000–0x0FF, 0x100–0x1FF, …) at a time, so a distance counter can be found offline.
+            if (gotAny && busSniff() && cycle % 20 == 11) {
+                val band = busBand++ % 8
+                val frames = elm.monitor("700", "${band}00", 1500)
+                val byId = frames.groupBy({ it.first }, { it.second })
+                onRaw(byId.flatMap { (id, ps) ->
+                    // Keep up to 4 distinct payloads per id (some ids multiplex several values).
+                    ps.distinct().takeLast(4).map { RawRead("BUS", id, it, false) }
+                })
             }
 
             // Research capture: raw bytes from candidate DIDs so the real pack temperature
@@ -229,6 +257,7 @@ object WindsorProfile {
                     energyLeftKwh = energy, maxCellMv = cellAvg + 6, minCellMv = cellAvg - 5,
                     maxCellId = 41, minCellId = 77,
                     aux12V = if (charging) 14.1 else 13.8, odometerKm = odo.toInt(),
+                    cellsMv = List(CELLS) { i -> cellAvg + ((i * 37) % 11) - 5 + if (i == 40) 6 else 0 }, cellsAt = now,
                 )
             )
             delay(700)

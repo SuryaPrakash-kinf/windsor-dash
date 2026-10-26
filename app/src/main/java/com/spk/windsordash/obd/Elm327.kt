@@ -12,7 +12,42 @@ class Elm327(private val t: ObdTransport) {
     private var currentHeader: String? = null
 
     /** Sends [cmd] and returns everything up to the '>' prompt (trimmed, prompt removed). */
-    suspend fun query(cmd: String, timeoutMs: Long = 600): String = lock.withLock {
+    suspend fun query(cmd: String, timeoutMs: Long = 600): String = lock.withLock { rawQuery(cmd, timeoutMs) }
+
+    /**
+     * Listens to the car's own broadcast traffic for [ms] (ELM "ATMA"), filtered by CAN [mask]/[filter].
+     * Returns (CAN id, payload hex) pairs. Read-only: nothing is sent to the car.
+     */
+    suspend fun monitor(mask: String, filter: String, ms: Long): List<Pair<String, String>> = lock.withLock {
+        val out = mutableListOf<Pair<String, String>>()
+        try {
+            for (c in listOf("ATS0", "ATH1", "ATCAF0", "ATCM$mask", "ATCF$filter")) rawQuery(c, 400)
+            while (t.incoming.tryReceive().isSuccess) { /* drain */ }
+            t.write("ATMA\r".toByteArray(Charsets.US_ASCII))
+            val sb = StringBuilder()
+            withTimeoutOrNull(ms) {
+                while (true) sb.append(String(t.incoming.receive(), Charsets.US_ASCII))
+            }
+            t.write("\r".toByteArray(Charsets.US_ASCII))      // any byte stops monitoring
+            withTimeoutOrNull(800) {
+                while (true) {
+                    sb.append(String(t.incoming.receive(), Charsets.US_ASCII))
+                    if (sb.indexOf(">") >= 0) break
+                }
+            }
+            for (line in sb.toString().uppercase().split('\r', '\n')) {
+                val l = line.trim().replace(" ", "")
+                val m = Regex("^([0-9A-F]{3})([0-9A-F]{2,16})$").find(l) ?: continue
+                if (m.groupValues[2].length % 2 == 0) out += m.groupValues[1] to m.groupValues[2]
+            }
+        } finally {
+            runCatching { rawQuery("ATAR", 400); rawQuery("ATCAF1", 400); rawQuery("ATH0", 400) }
+            currentHeader = null     // the next target() re-sets header and receive filter
+        }
+        out
+    }
+
+    private suspend fun rawQuery(cmd: String, timeoutMs: Long): String {
         // Drop late bytes from a previous timed-out command.
         while (t.incoming.tryReceive().isSuccess) { /* drain */ }
         t.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
@@ -28,7 +63,7 @@ class Elm327(private val t: ObdTransport) {
                 if (sb.indexOf(">") >= 0) break
             }
         }
-        sb.toString().replace(">", "").replace("\u0000", "").trim()
+        return sb.toString().replace(">", "").replace("\u0000", "").trim()
     }
 
     suspend fun init(): String {

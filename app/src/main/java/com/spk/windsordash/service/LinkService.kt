@@ -134,9 +134,13 @@ class LinkService : Service() {
                                 }
                             },
                             research = { com.spk.windsordash.data.LocalLog.research },
+                            busSniff = {
+                                val st = Dash.state.value
+                                com.spk.windsordash.data.LocalLog.research && (st.run != null || (st.speedKmh ?: 0.0) > 10)
+                            },
                             onRaw = { reads ->
                                 val st = Dash.state.value
-                                com.spk.windsordash.data.LocalLog.raw(reads, st.sample, st.powerKw)
+                                com.spk.windsordash.data.LocalLog.raw(reads, st.sample, st.powerKw, st.odoKm, st.speedKmh)
                             },
                         ) { Dash.onSample(it) }
                     }

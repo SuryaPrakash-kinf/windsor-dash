@@ -400,6 +400,7 @@ private fun Screen(
         }
 
         RunsPanel(st)
+        AllCellsPanel(st.sample)
         CellWatchPanel()
         OdometerPanel(st)
         LogsPanel()
@@ -651,7 +652,8 @@ private fun LogsPanel() {
                 Text("Research capture", color = Color.White, fontSize = 14.sp)
                 Text(
                     "Also records raw battery-computer bytes to raw-<date>.csv, to find the real pack " +
-                        "temperature. Switch on before a DC charge or a long drive.",
+                        "temperature. While driving it also listens to the car's own broadcast traffic (to find the odometer). " +
+                        "Switch on before a DC charge or a long drive.",
                     color = Dim, fontSize = 12.sp
                 )
             }
@@ -843,6 +845,52 @@ private fun AutoConnectLine() {
         )
     }
     LaunchedEffect(picking) { if (!picking) { delay(1500); name = act.autoConnectName() } }
+}
+
+/* ---------------- all 98 cells ---------------- */
+
+@Composable
+private fun AllCellsPanel(s: com.spk.windsordash.obd.Sample) {
+    val cells = s.cellsMv
+    val at = s.cellsAt
+    Panel {
+        Text("All 98 cells", color = Dim, fontSize = 13.sp)
+        if (cells == null || at == null) {
+            Text("Listening for the battery's cell broadcast… (needs the car on; a few adapters can't listen).", color = Dim, fontSize = 12.sp)
+            return@Panel
+        }
+        val mx = cells.max(); val mn = cells.min()
+        val hi = cells.indexOf(mx) + 1; val lo = cells.indexOf(mn) + 1
+        val avg = cells.average()
+        val ageS = (System.currentTimeMillis() - at) / 1000
+        Text(
+            "Spread ${mx - mn} mV  ·  high #$hi $mx  ·  low #$lo $mn  ·  avg ${avg.roundToInt()} mV",
+            color = Color.White, fontSize = 13.sp
+        )
+        val top = mx + 2; val bottom = mn - 2
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(110.dp).padding(top = 6.dp)) {
+            val w = size.width / cells.size
+            val range = (top - bottom).coerceAtLeast(4).toFloat()
+            cells.forEachIndexed { i, mv ->
+                val h = (mv - bottom) / range * size.height
+                drawRect(
+                    color = when (mv) { mx -> Amber; mn -> Red; else -> Teal },
+                    topLeft = androidx.compose.ui.geometry.Offset(i * w + w * 0.1f, size.height - h),
+                    size = androidx.compose.ui.geometry.Size(w * 0.8f, h),
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth()) {
+            Text("#1", color = Dim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+            Text("$bottom–$top mV scale", color = Dim, fontSize = 10.sp, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Text("#98", color = Dim, fontSize = 10.sp, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.End)
+        }
+        Text(
+            "Measured: the car broadcasts every cell; nothing estimated. " +
+                (if (ageS < 90) "Updated ${ageS}s ago." else "Last heard ${ageS / 60} min ago."),
+            color = Dim, fontSize = 11.sp
+        )
+    }
 }
 
 /* ---------------- cell watch ---------------- */
