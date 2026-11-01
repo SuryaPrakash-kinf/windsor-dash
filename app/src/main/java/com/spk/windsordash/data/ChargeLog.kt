@@ -81,6 +81,37 @@ object ChargeLog {
         LocalLog.writeText(FILE, sb.toString())
     }
 
+    /** The Windsor's onboard AC charger tops out at 7.4 kW; a little headroom for meter noise. */
+    const val AC_MAX_KW = 8.0
+
+    fun dcNote(avgKw: Double) =
+        "Logged as DC fast: averaged at least %.0f kW over the gap, more than any AC charger can give. Add the cost if you have it.".format(avgKw)
+
+    /**
+     * One-time repair (0.10.1): charges found after the fact used to be logged as home AC at ₹0 even when
+     * they were far too fast for AC (e.g. a DC stop with the dongle unplugged). Relabel those as DC fast.
+     */
+    fun fixGapChargesTooFastForAc() {
+        val list = load()
+        var changed = 0
+        val fixed = list.map { e ->
+            val end = e.end ?: return@map e
+            val kwh = e.kwhBattery ?: return@map e
+            val avgKw = kwh / ((end - e.start).coerceAtLeast(60_000L) / 3_600_000.0)
+            if (e.auto && e.type == ChargerType.HOME_AC && e.notes.startsWith("Found after the fact") && avgKw > AC_MAX_KW) {
+                changed++
+                e.copy(
+                    type = ChargerType.DC_FAST, costInr = null,
+                    notes = e.notes.replace(Regex(" Cost calculated at home tariff .*$"), "") + " " + dcNote(avgKw),
+                )
+            } else e
+        }
+        if (changed > 0) {
+            save(fixed)
+            LocalLog.event("charge log: $changed charge(s) found after the fact relabelled as DC fast (too fast for AC)")
+        }
+    }
+
     fun upsert(e: ChargeEntry) = save(load().filterNot { it.id == e.id } + e)
 
     fun delete(id: Long) = save(load().filterNot { it.id == id })

@@ -240,7 +240,11 @@ object WindsorProfile {
     }
 
     suspend fun readOdometer(elm: Elm327, spec: OdoSpec): Double? {
-        return if (spec.isObd) {
+        return if (spec.isBroadcast) {
+            // 0x120 is sent only every few seconds: listen for just that id, stop at the first frame.
+            elm.monitor("7FF", spec.rx, 5000, stopAfterFrames = 1)
+                .lastOrNull { it.first == spec.rx }?.let { spec.decode(OdoSpec.fromHex(it.second)) }
+        } else if (spec.isObd) {
             elm.query("ATSH7DF", 300); elm.query("ATCRA${spec.rx}", 300); elm.forgetTarget()
             Elm327.payloadAfter(elm.query("01A6", 500), "41A6")?.let { spec.decode(it) }
         } else {

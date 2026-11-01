@@ -18,6 +18,8 @@ data class OdoSpec(
     val little: Boolean = false,
 ) {
     val isObd get() = did == "01A6"
+    /** Read by listening to a CAN id the car broadcasts by itself (rx = CAN id), not by asking an ECU. */
+    val isBroadcast get() = tx == "BUS"
 
     fun encode() = listOf(tx, rx, did, need, offset, width, divisor, if (little) 1 else 0).joinToString("|")
 
@@ -32,6 +34,7 @@ data class OdoSpec(
     }
 
     fun describe() = if (isObd) "standard OBD odometer (01 A6)"
+    else if (isBroadcast) "car's own CAN broadcast 0x$rx, bytes ${offset + 1}–${offset + width}" + (if (divisor != 1) " ÷$divisor" else "")
     else "ECU $tx→$rx, DID $did, bytes ${offset + 1}–${offset + width}" +
         (if (divisor != 1) " ÷$divisor" else "") + (if (little) " (little-endian)" else "")
 
@@ -46,6 +49,15 @@ data class OdoSpec(
 
         /** Existing guess shared with EVDS (copied from the MG ZS EV). Tried until it fails. */
         val ZS_EV_GUESS = OdoSpec("744", "74C", "B921", 3, 0, 3, 1)
+
+        /**
+         * Windsor odometer, found in the 1 Nov 2026 bus capture: CAN id 0x120, bytes 1–4 big-endian ÷ 64 = km.
+         * Read 24 660.06 km a minute before the owner entered 24 660 from the dashboard, and matched
+         * GPS distance within 0.3 % over 144 km.
+         */
+        val WINDSOR_CAN = OdoSpec("BUS", "120", "CAN", 0, 0, 4, 64)
+
+        fun fromHex(hex: String): IntArray = IntArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16) }
     }
 }
 
@@ -336,7 +348,9 @@ object OdoFinder {
         return null
     }
 
-    private suspend fun readSpec(elm: Elm327, spec: OdoSpec): Double? = if (spec.isObd) {
+    private suspend fun readSpec(elm: Elm327, spec: OdoSpec): Double? = if (spec.isBroadcast) {
+        WindsorProfile.readOdometer(elm, spec)
+    } else if (spec.isObd) {
         elm.query("ATSH7DF", 300); elm.query("ATCRA${spec.rx}", 300)
         Elm327.payloadAfter(elm.query("01A6", 500), "41A6")?.let { spec.decode(it) }
     } else {

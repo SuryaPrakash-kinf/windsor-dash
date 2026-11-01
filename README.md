@@ -57,7 +57,8 @@ Bluetooth LE (Vgate iCar Pro BLE, Veepeak BLE, OBDLink CX, vLinker BLE…), clas
 | BMS | 742 / 74A | D265 / D266 | Coolant into / out of the pack (**unverified**: inlet drops to ~10 °C when the chiller runs on DC) | u8 − 40, °C |
 | BMS | 742 / 74A | D263 | Jumps during DC charging only — cooling request or pump duty? Logged raw | u8 |
 | Thermal | 745 / 74D | A021 | **Not** pack temperature (constant 31 °C through a 61 kW DC charge). Logged as `a021_unverified` only | u8 |
-| Cluster? | 744 / 74C | B921 | Odometer (ZS EV guess — usually no reply on Windsor) | u24, km |
+| — | broadcast | CAN 0x120 | **Odometer** (heard, not requested; sent every few seconds). Matched the dashboard to 0.1 km and GPS to 0.3 % over 144 km | bytes 1–4 u32 BE ÷ 64, km |
+| Cluster? | 744 / 74C | B921 | Odometer (ZS EV guess — no reply on Windsor) | u24, km |
 
 Range = energy left ÷ efficiency (this trip once ≥ 5 km, otherwise your lifetime average, otherwise 130 Wh/km).
 

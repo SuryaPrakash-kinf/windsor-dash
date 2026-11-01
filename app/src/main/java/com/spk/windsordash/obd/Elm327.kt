@@ -18,7 +18,7 @@ class Elm327(private val t: ObdTransport) {
      * Listens to the car's own broadcast traffic for [ms] (ELM "ATMA"), filtered by CAN [mask]/[filter].
      * Returns (CAN id, payload hex) pairs. Read-only: nothing is sent to the car.
      */
-    suspend fun monitor(mask: String, filter: String, ms: Long): List<Pair<String, String>> = lock.withLock {
+    suspend fun monitor(mask: String, filter: String, ms: Long, stopAfterFrames: Int = 0): List<Pair<String, String>> = lock.withLock {
         val out = mutableListOf<Pair<String, String>>()
         try {
             for (c in listOf("ATS0", "ATH1", "ATCAF0", "ATCM$mask", "ATCF$filter")) rawQuery(c, 400)
@@ -26,7 +26,11 @@ class Elm327(private val t: ObdTransport) {
             t.write("ATMA\r".toByteArray(Charsets.US_ASCII))
             val sb = StringBuilder()
             withTimeoutOrNull(ms) {
-                while (true) sb.append(String(t.incoming.receive(), Charsets.US_ASCII))
+                while (true) {
+                    sb.append(String(t.incoming.receive(), Charsets.US_ASCII))
+                    // Optional early stop (e.g. one slow broadcast id): count complete frame lines so far.
+                    if (stopAfterFrames > 0 && frameLines(sb.toString()).size >= stopAfterFrames) break
+                }
             }
             t.write("\r".toByteArray(Charsets.US_ASCII))      // any byte stops monitoring
             withTimeoutOrNull(800) {
@@ -35,16 +39,23 @@ class Elm327(private val t: ObdTransport) {
                     if (sb.indexOf(">") >= 0) break
                 }
             }
-            for (line in sb.toString().uppercase().split('\r', '\n')) {
-                val l = line.trim().replace(" ", "")
-                val m = Regex("^([0-9A-F]{3})([0-9A-F]{2,16})$").find(l) ?: continue
-                if (m.groupValues[2].length % 2 == 0) out += m.groupValues[1] to m.groupValues[2]
-            }
+            out += frameLines(sb.toString())
         } finally {
             runCatching { rawQuery("ATAR", 400); rawQuery("ATCAF1", 400); rawQuery("ATH0", 400) }
             currentHeader = null     // the next target() re-sets header and receive filter
         }
         out
+    }
+
+    /** Complete "IDPAYLOAD" lines (header on, spaces off) in monitor output. */
+    private fun frameLines(text: String): List<Pair<String, String>> {
+        val lines = text.uppercase().split('\r', '\n')
+        // The last piece may be a frame still arriving: only count it once a line break follows.
+        return lines.dropLast(1).mapNotNull { line ->
+            val l = line.trim().replace(" ", "")
+            Regex("^([0-9A-F]{3})([0-9A-F]{2,16})$").find(l)
+                ?.takeIf { it.groupValues[2].length % 2 == 0 }?.let { it.groupValues[1] to it.groupValues[2] }
+        }
     }
 
     private suspend fun rawQuery(cmd: String, timeoutMs: Long): String {

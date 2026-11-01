@@ -126,7 +126,8 @@ class LinkService : Service() {
                             between = {
                                 // Background odometer search: a few requests per cycle, never fatal to the link.
                                 try {
-                                    OdoFinder.step(elm, Dash.state.value.odoKm)?.let { Dash.saveOdoSpec(it) }
+                                    if (Dash.state.value.odoSpec?.isBroadcast != true)
+                                        OdoFinder.step(elm, Dash.state.value.odoKm)?.let { Dash.saveOdoSpec(it) }
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (_: Exception) {

@@ -181,7 +181,13 @@ object Dash {
                 odoSpec = OdoSpec.decodeSpec(prefs.getString("odo_spec", null)),
             )
         }
+        // 0.10.1: the Windsor's odometer is known (CAN 0x120). Use it in place of any earlier
+        // finder result or none, so the car's own reading takes over without another search.
+        if (_state.value.odoSpec != OdoSpec.WINDSOR_CAN) saveOdoSpec(OdoSpec.WINDSOR_CAN)
         refreshOdo(null)
+        if (!prefs.getBoolean("fix_dc_gap_v1", false)) Thread {
+            runCatching { ChargeLog.fixGapChargesTooFastForAc(); prefs.edit().putBoolean("fix_dc_gap_v1", true).apply() }
+        }.start()
         paused = PausedCharge.decode(prefs.getString("paused_charge", null))
         prefs.edit().remove("lt_km").remove("lt_wh").apply()   // old lifetime average (was skewed by no-GPS energy)
         refreshRunsEff()
@@ -215,14 +221,19 @@ object Dash {
         val dE = e - e0
         val dSoc = soc - soc0
         if (dE >= 1.0 && dSoc >= 2) {
-            val tariff = homeTariff
+            // Energy ÷ the whole time away is the slowest the charge could have been. Above what any
+            // AC charger can deliver to the Windsor (7.4 kW onboard), it can only have been DC.
+            val avgKw = dE / ((s.at - at) / 3_600_000.0)
+            val dc = avgKw > ChargeLog.AC_MAX_KW
+            val tariff = if (dc) null else homeTariff
             val entry = ChargeEntry(
-                id = at, start = at, end = s.at, type = ChargerType.HOME_AC,
+                id = at, start = at, end = s.at, type = if (dc) ChargerType.DC_FAST else ChargerType.HOME_AC,
                 socStart = soc0.toInt(), socEnd = soc.toInt(), kwhBattery = dE,
                 costInr = tariff?.let { it * dE }, odometerKm = _state.value.odoKm?.toInt(), auto = true,
                 notes = "Found after the fact: charged while the dongle was disconnected, between " +
                     "${hm.format(Date(at))} and ${hm.format(Date(s.at))}. kWh is the battery's own energy counter; " +
                     "if you also drove in between, the real charge was larger." +
+                    (if (dc) " ${ChargeLog.dcNote(avgKw)}" else "") +
                     (tariff?.let { " Cost calculated at home tariff ₹%.2f/kWh.".format(it) } ?: ""),
             )
             val gap = "Link lost ${hm.format(Date(at))}–${hm.format(Date(s.at))}: +%.1f kWh from the battery's energy counter.".format(dE)
