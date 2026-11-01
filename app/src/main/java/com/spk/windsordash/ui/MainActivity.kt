@@ -392,7 +392,11 @@ private fun Screen(
                 "Lowest cell" to (s.minCellMv?.let { "$it mV" + (s.minCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
                 "Cell spread" to (delta?.let { "$it mV" } ?: "–"),
                 "12 V battery" to (s.aux12V?.let { "%.1f V".format(it) } ?: "–"),
+                "Pack temp*" to (s.packTempMaxC?.let { mx -> "$mx °C high" + (s.packTempMinC?.let { " · $it low" } ?: "") } ?: "–"),
+                "Coolant*" to (s.coolantInC?.let { ci -> "$ci °C in" + (s.coolantOutC?.let { " · $it out" } ?: "") } ?: "–"),
             )
+            Spacer(Modifier.height(4.dp))
+            Text("* Temperatures not yet confirmed: the decoding fits a DC-charge log but still needs a check against a cold car.", color = Dim, fontSize = 11.sp)
             if (delta != null && delta > 50) {
                 Spacer(Modifier.height(6.dp))
                 Text("Cell spread above 50 mV — worth watching. LFP spread reads largest near empty and full.", color = Amber, fontSize = 12.sp)

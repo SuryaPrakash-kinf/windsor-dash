@@ -54,7 +54,9 @@ object LocalLog {
         "time,status,soc_pct,soh_pct,energy_left_kwh,pack_v,current_a,power_kw," +
             "max_cell_mv,max_cell_no,min_cell_mv,min_cell_no,cell_spread_mv,a021_unverified,aux_12v,odometer_km," +
             "odo_shown_km,odo_source,trip_km,trip_dist_source,charging,parked,gps_on,speed_kmh," +
-            "d02b_raw,d02e_raw,d016_raw,d036_raw,d064_raw,d065_raw"
+            "d02b_raw,d02e_raw,d016_raw,d036_raw,d064_raw,d065_raw," +
+            "d02c_raw,d02d_raw,d265_raw,d266_raw,d263_raw,pack_temp_max_c_unverified,pack_temp_min_c_unverified," +
+            "coolant_in_c_unverified,coolant_out_c_unverified"
     private const val EVENTS_HEADER = "time,event"
 
     private fun prefs() = appCtx.getSharedPreferences("dash", Context.MODE_PRIVATE)
@@ -144,6 +146,8 @@ object LocalLog {
                         st.odoKm?.r(1), st.odoSource.name.lowercase(), st.trip?.km?.r(2), st.trip?.distSource,
                         if (st.charging) 1 else 0, if (st.parked) 1 else 0, if (st.gpsOn) 1 else 0, st.speedKmh?.r(0),
                         s.d02bRaw, s.d02eRaw, s.d016Raw, s.d036Raw, s.d064Raw, s.d065Raw,
+                        s.d02cRaw, s.d02dRaw, s.d265Raw, s.d266Raw, s.d263Raw,
+                        s.packTempMaxC, s.packTempMinC, s.coolantInC, s.coolantOutC,
                     ).joinToString(",") { it?.toString() ?: "" }
                 )
                 w.newLine()
@@ -347,7 +351,7 @@ object LocalLog {
 
     /**
      * Opens [name] for appending in the current destination, writing [header] if the file is new.
-     * If an existing file has a different header (older app version), a "-v2" file is used instead.
+     * If an existing file has a different header (older app version), a "-v2", "-v3"… file is used instead.
      * Any folder failure falls back to app storage so no readings are lost.
      */
     private fun openAppend(name: String, header: String): Pair<BufferedWriter, ParcelFileDescriptor?> {
@@ -365,12 +369,13 @@ object LocalLog {
     private fun openInFolder(t: DocumentFile, name: String, header: String): Pair<BufferedWriter, ParcelFileDescriptor?> {
         var target = name
         var doc = t.findFile(target)
-        if (doc != null && doc.length() > 0) {
+        var n = 1
+        while (doc != null && doc.length() > 0 && n < 20) {
             val first = appCtx.contentResolver.openInputStream(doc.uri)?.bufferedReader()?.use { it.readLine() }
-            if (first != header) {
-                target = name.removeSuffix(".csv") + "-v2.csv"
-                doc = t.findFile(target)
-            }
+            if (first == header) break
+            n++
+            target = name.removeSuffix(".csv") + "-v$n.csv"
+            doc = t.findFile(target)
         }
         val fresh = doc == null || doc.length() == 0L
         if (doc == null) doc = t.createFile("text/csv", target.removeSuffix(".csv"))
@@ -385,8 +390,11 @@ object LocalLog {
 
     private fun openInternal(name: String, header: String): BufferedWriter {
         var f = File(dir, name)
-        if (f.exists() && f.length() > 0 && runCatching { f.bufferedReader().use { it.readLine() } }.getOrNull() != header) {
-            f = File(dir, name.removeSuffix(".csv") + "-v2.csv")
+        var n = 1
+        while (f.exists() && f.length() > 0 && n < 20 &&
+            runCatching { f.bufferedReader().use { it.readLine() } }.getOrNull() != header) {
+            n++
+            f = File(dir, name.removeSuffix(".csv") + "-v$n.csv")
         }
         val fresh = !f.exists() || f.length() == 0L
         return BufferedWriter(FileWriter(f, true)).also { if (fresh) { it.write(header); it.newLine() } }

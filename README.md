@@ -3,7 +3,7 @@
 Live battery dashboard for the **MG Windsor EV (52.9 kWh)** over an ELM327 OBD-II dongle, with an **Android Auto** screen.
 
 ## What it shows
-- **Phone:** SoC, range, energy left, power (drive / regen / charge), pack V & A, trip efficiency, charging session, SoH, pack temperature, highest/lowest cell (with cell number) and spread, 12 V battery, odometer.
+- **Phone:** SoC, range, energy left, power (drive / regen / charge), pack V & A, trip efficiency, charging session, SoH, pack temperature and coolant in/out (marked unverified), highest/lowest cell (with cell number) and spread, 12 V battery, odometer.
 - **Android Auto:** Live (SoC + range, power, trip, charging, battery), Charging (kW, kWh added, time to 80/90/100 %), Trip (Wh/km, kWh/100 km, regen, range).
 
 ## Charging, alerts and auto-connect
@@ -26,7 +26,7 @@ The app makes no network calls except to a Wi-Fi OBD dongle. It has no analytics
 In app-storage mode the Logs panel also offers **Save to Downloads** (copies to `Download/WindsorDash`), **Share**, **Delete**, or switch logging off. Demo mode is never logged.
 
 ## Research capture
-The Windsor's real pack temperature DID isn't known yet. With **Research capture** on, the app writes `raw-<date>.csv`:
+Research capture is how the pack temperature DIDs below were found (1 Nov 2026 log: 450 km of driving plus a 58 kW DC charge). It stays available for hunting other values. With **Research capture** on, the app writes `raw-<date>.csv`:
 - every ~10 s: raw bytes from candidate DIDs (BMS D01D, D014, D01F, D016, D030–D037, D02B, D101; thermal A021, A035, A017)
 - every 10 min: a sweep of D000–D0FF (BMS) and A000–A0FF (thermal), read 8 per cycle so live data keeps flowing; only DIDs that answer are kept
 
@@ -53,6 +53,9 @@ Bluetooth LE (Vgate iCar Pro BLE, Veepeak BLE, OBDLink CX, vLinker BLE…), clas
 | BMS | 742 / 74A | D060 | Energy left | u16 / 10, kWh |
 | BMS | 742 / 74A | D06A / D06C | Max / min cell | u16, mV |
 | BMS | 742 / 74A | D06B / D06D | Max / min cell number | u8 |
+| BMS | 742 / 74A | D02C / D02B / D02D | Pack temperature high / average / low (**unverified**: 38 → 51 °C across a DC charge) | u8 − 40, °C |
+| BMS | 742 / 74A | D265 / D266 | Coolant into / out of the pack (**unverified**: inlet drops to ~10 °C when the chiller runs on DC) | u8 − 40, °C |
+| BMS | 742 / 74A | D263 | Jumps during DC charging only — cooling request or pump duty? Logged raw | u8 |
 | Thermal | 745 / 74D | A021 | **Not** pack temperature (constant 31 °C through a 61 kW DC charge). Logged as `a021_unverified` only | u8 |
 | Cluster? | 744 / 74C | B921 | Odometer (ZS EV guess — usually no reply on Windsor) | u24, km |
 

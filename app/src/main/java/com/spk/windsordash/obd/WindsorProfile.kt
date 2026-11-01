@@ -24,8 +24,17 @@ data class Sample(
     val minCellId: Int? = null,
     /** Thermal-module DID A021. NOT the pack temperature (stuck at 31 °C all day) — kept for research only. */
     val a021Raw: Int? = null,
-    /** Raw single bytes being identified as temperatures (raw − 50 looks like °C; unconfirmed). */
-    val d02bRaw: Int? = null,   // pack temperature candidate
+    /**
+     * Raw single bytes being identified as temperatures. Decoded as raw − [WindsorProfile.TEMP_OFFSET] °C,
+     * which fits the 1 Nov DC-charge log (chilled coolant ~10 °C, pack 38 → 51 °C) but is not yet
+     * confirmed against a cold-soaked car; the raw bytes are always logged so this can be corrected.
+     */
+    val d02bRaw: Int? = null,   // pack temperature, average
+    val d02cRaw: Int? = null,   // pack temperature, highest
+    val d02dRaw: Int? = null,   // pack temperature, lowest
+    val d265Raw: Int? = null,   // coolant into the pack (falls to ~10 °C when the chiller runs on DC)
+    val d266Raw: Int? = null,   // coolant out of the pack
+    val d263Raw: Int? = null,   // jumps during DC charging: cooling request / pump duty? (raw only)
     val d02eRaw: Int? = null,   // fast-rising: motor/inverter?
     val d016Raw: Int? = null,   // tracks outside air: coolant/inlet?
     val d036Raw: Int? = null,   // fast-rising: drive unit?
@@ -37,7 +46,13 @@ data class Sample(
     /** All 98 cell voltages (mV, cell 1 first), heard on the car's own CAN broadcast. */
     val cellsMv: List<Int>? = null,
     val cellsAt: Long? = null,
-)
+) {
+    val packTempMaxC get() = WindsorProfile.tempC(d02cRaw)
+    val packTempMinC get() = WindsorProfile.tempC(d02dRaw)
+    val packTempAvgC get() = WindsorProfile.tempC(d02bRaw)
+    val coolantInC get() = WindsorProfile.tempC(d265Raw)
+    val coolantOutC get() = WindsorProfile.tempC(d266Raw)
+}
 
 /**
  * MG Windsor EV (52.9 kWh, 98S LFP) over UDS on CAN 500k/11-bit.
@@ -46,6 +61,10 @@ data class Sample(
 object WindsorProfile {
     const val RATED_KWH = 52.92
     const val CELLS = 98
+
+    /** Temperature bytes: °C = raw − TEMP_OFFSET (unverified; see [Sample.d02bRaw]). */
+    const val TEMP_OFFSET = 40
+    fun tempC(raw: Int?): Int? = raw?.takeIf { it in 1..254 }?.minus(TEMP_OFFSET)
 
     private const val BMS_TX = "742"; private const val BMS_RX = "74A"
     private const val THERM_TX = "745"; private const val THERM_RX = "74D"
@@ -117,6 +136,11 @@ object WindsorProfile {
                 elm.target(BMS_TX, BMS_RX)
                 s = s.copy(
                     d02bRaw = elm.readDid("D02B", 1)?.get(0) ?: s.d02bRaw,
+                    d02cRaw = elm.readDid("D02C", 1)?.get(0) ?: s.d02cRaw,
+                    d02dRaw = elm.readDid("D02D", 1)?.get(0) ?: s.d02dRaw,
+                    d265Raw = elm.readDid("D265", 1)?.get(0) ?: s.d265Raw,
+                    d266Raw = elm.readDid("D266", 1)?.get(0) ?: s.d266Raw,
+                    d263Raw = elm.readDid("D263", 1)?.get(0) ?: s.d263Raw,
                     d02eRaw = elm.readDid("D02E", 1)?.get(0) ?: s.d02eRaw,
                     d016Raw = elm.readDid("D016", 1)?.get(0) ?: s.d016Raw,
                     d036Raw = elm.readDid("D036", 1)?.get(0) ?: s.d036Raw,

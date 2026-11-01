@@ -184,6 +184,10 @@ class ChargingScreen(ctx: CarContext) : DashScreen(ctx) {
                 "Estimate slows above 90% (LFP taper)",
             ),
             row("Cell spread ${st.cellDeltaMv?.let { "$it mV" } ?: "–"}", s.maxCellMv?.let { "Highest ${it} mV · lowest ${s.minCellMv ?: "–"} mV" }),
+            row(
+                "Pack ${s.packTempMaxC?.let { "$it °C" } ?: "–"} (unverified)",
+                s.coolantInC?.let { "Coolant in $it °C" + (s.coolantOutC?.let { " · out $it °C" } ?: "") },
+            ),
         )
         return list("Charging", rows, strip, back = true)
     }
