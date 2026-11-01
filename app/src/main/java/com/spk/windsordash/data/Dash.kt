@@ -225,15 +225,22 @@ object Dash {
             // AC charger can deliver to the Windsor (7.4 kW onboard), it can only have been DC.
             val avgKw = dE / ((s.at - at) / 3_600_000.0)
             val dc = avgKw > ChargeLog.AC_MAX_KW
-            val tariff = if (dc) null else homeTariff
+            // Away more than a day: the gain is only the net of whatever drives and charges happened,
+            // so don't pass it off as one home charge — leave the type for the owner to set.
+            val days = (s.at - at) / 86_400_000.0
+            val longGap = !dc && days > 1.0
+            val tariff = if (dc || longGap) null else homeTariff
             val entry = ChargeEntry(
-                id = at, start = at, end = s.at, type = if (dc) ChargerType.DC_FAST else ChargerType.HOME_AC,
+                id = at, start = at, end = s.at,
+                type = when { dc -> ChargerType.DC_FAST; longGap -> ChargerType.UNKNOWN; else -> ChargerType.HOME_AC },
                 socStart = soc0.toInt(), socEnd = soc.toInt(), kwhBattery = dE,
                 costInr = tariff?.let { it * dE }, odometerKm = _state.value.odoKm?.toInt(), auto = true,
                 notes = "Found after the fact: charged while the dongle was disconnected, between " +
                     "${hm.format(Date(at))} and ${hm.format(Date(s.at))}. kWh is the battery's own energy counter; " +
                     "if you also drove in between, the real charge was larger." +
                     (if (dc) " ${ChargeLog.dcNote(avgKw)}" else "") +
+                    (if (longGap) (" Net change over %.1f days without the dongle: probably several charges and drives. " +
+                        "Set the type and cost, or delete this entry.").format(days) else "") +
                     (tariff?.let { " Cost calculated at home tariff ₹%.2f/kWh.".format(it) } ?: ""),
             )
             val gap = "Link lost ${hm.format(Date(at))}–${hm.format(Date(s.at))}: +%.1f kWh from the battery's energy counter.".format(dE)
