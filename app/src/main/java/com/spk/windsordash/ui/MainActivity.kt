@@ -293,7 +293,8 @@ internal fun Screen(
                 Column(Modifier.weight(1f)) {
                     Label("Range est.")
                     Value(st.rangeKm?.toString() ?: "–", "km", size = 38.sp, color = Teal, weight = FontWeight.Light)
-                    Text("at ${st.effWhKm?.roundToInt() ?: "–"} Wh/km · ${st.effSource}", color = Faint, fontSize = 11.sp)
+                    Text("at ${st.effWhKm?.roundToInt() ?: "–"} Wh/km", color = Faint, fontSize = 11.sp)
+                    Text(st.effSource, color = Faint, fontSize = 11.sp, maxLines = 1)
                     Spacer(Modifier.height(14.dp))
                     Label("Energy left")
                     Value(s.energyLeftKwh?.let { "%.1f".format(it) } ?: "–", "kWh", size = 22.sp)
@@ -325,7 +326,7 @@ internal fun Screen(
                 Column(horizontalAlignment = Alignment.End) {
                     Value(s.packV?.let { "%.0f".format(it) } ?: "–", "V", size = 16.sp, weight = FontWeight.Medium)
                     Value(s.currentA?.takeIf { st.hasData }?.let { "%.1f".format(it) } ?: "–", "A", size = 16.sp, weight = FontWeight.Medium)
-                    st.speedKmh?.takeIf { st.hasData }?.let { Value("%.0f".format(it), "km/h", size = 16.sp, weight = FontWeight.Medium, color = Dim) }
+                    st.speedKmh?.takeIf { st.hasData && it >= 1 }?.let { Value("%.0f".format(it), "km/h", size = 16.sp, weight = FontWeight.Medium, color = Dim) }
                 }
             }
             Spacer(Modifier.height(14.dp))
@@ -344,12 +345,12 @@ internal fun Screen(
                     dot = if (c.active) Green else Dim,
                 )
                 c.gapNote?.let { Text(it, color = Dim, fontSize = 11.sp); Spacer(Modifier.height(8.dp)) }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Tiles {
                     Tile("Added", "%.1f".format(c.addedKwh), "kWh", color = Green)
                     Tile("Peak", "%.0f".format(c.peakKw), "kW")
                 }
                 Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Tiles {
                     Tile("SoC", "${c.startSoc?.roundToInt() ?: "–"}→${(c.endSoc ?: s.socPct)?.roundToInt() ?: "–"}", "%")
                     Tile("Time", minutes(((c.endedAt ?: System.currentTimeMillis()) - c.startedAt) / 60_000))
                 }
@@ -358,7 +359,10 @@ internal fun Screen(
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Label("To")
                         for (t in listOf(80, 90, 100)) FilterChip(
-                            selected = st.targetSoc == t, onClick = { Dash.setTarget(t) }, label = { Text("$t%") })
+                            selected = st.targetSoc == t, onClick = { Dash.setTarget(t) }, label = { Text("$t%") },
+                            colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Teal.copy(alpha = 0.18f), selectedLabelColor = Teal, labelColor = Dim,
+                            ))
                         Spacer(Modifier.weight(1f))
                         Text(st.minutesToTarget?.let { "est. " + minutes(it.toLong()) } ?: "–", color = Teal, fontWeight = FontWeight.SemiBold)
                     }
@@ -373,7 +377,7 @@ internal fun Screen(
                 Text("Reset", color = Teal, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.clip(CircleShape).clickable { Dash.resetTrip() }.padding(horizontal = 8.dp, vertical = 2.dp))
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Tiles {
                 Tile("Distance", t?.let { "%.1f".format(it.km) } ?: "–", "km", sub = t?.distSource)
                 Tile("Efficiency", t?.whPerKm?.roundToInt()?.toString() ?: "–", "Wh/km", color = Cyan)
             }
@@ -392,7 +396,7 @@ internal fun Screen(
         Panel {
             val delta = st.cellDeltaMv
             Heading("Battery", dot = Green)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Tiles {
                 Tile("Pack temp*", s.packTempMaxC?.toString() ?: "–", "°C", color = tempColor(s.packTempMaxC),
                     sub = s.packTempMinC?.let { "low $it °C" })
                 Tile("Coolant in*", s.coolantInC?.toString() ?: "–", "°C", color = tempColor(s.coolantInC),

@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -126,7 +128,7 @@ internal fun Heading(title: String, dot: Color = Teal, trailing: @Composable Row
 @Composable
 internal fun RowScope.Tile(label: String, value: String, unit: String = "", color: Color = Ink, sub: String? = null) {
     Column(
-        Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(Color(0x0DFFFFFF))
+        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(14.dp)).background(Color(0x0DFFFFFF))
             .border(1.dp, Color(0x0AFFFFFF), RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
         Label(label)
@@ -134,6 +136,12 @@ internal fun RowScope.Tile(label: String, value: String, unit: String = "", colo
         Value(value, unit, size = 22.sp, color = color)
         if (sub != null) Text(sub, color = Faint, fontSize = 11.sp, maxLines = 1)
     }
+}
+
+/** A row of equal-height tiles. */
+@Composable
+internal fun Tiles(content: @Composable RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp), content = content)
 }
 
 /** Two-column grid of label/value pairs (compact, for secondary figures). */
