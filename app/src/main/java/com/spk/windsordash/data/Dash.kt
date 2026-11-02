@@ -174,6 +174,7 @@ object Dash {
         prefs = ctx.applicationContext.getSharedPreferences("dash", Context.MODE_PRIVATE)
         LocalLog.init(ctx.applicationContext)
         com.spk.windsordash.obd.OdoFinder.init(ctx.applicationContext)
+        ChargeCurve.init(ctx.applicationContext)
         _state.update {
             it.copy(
                 adapter = AdapterRef.decode(prefs.getString("adapter", null)),
@@ -623,6 +624,7 @@ object Dash {
                 }
             } else old
             if (justStarted) inflowWh = 0.0
+            if (kw != null && kw < 0) ChargeCurve.record(s.socPct, -kw)
             if (kw != null && kw < 0) base.copy(addedKwh = base.addedKwh + (-kw) * dtH, peakKw = maxOf(base.peakKw, -kw)) else base
         } else if (old != null && old.active && paused == null) {
             val ended = old.copy(endedAt = now, endSoc = s.socPct)

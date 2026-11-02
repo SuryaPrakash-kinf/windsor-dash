@@ -34,14 +34,14 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          gradle --no-daemon testDebugUnitTest --tests '*ScreenshotTest*' 2>&1 | tee shots.log
+          gradle --no-daemon testDebugUnitTest --tests '*ScreenshotTest*' --tests '*ChargePlannerTest*' 2>&1 | tee shots.log
 
       - name: Publish screenshots
         if: always()
         continue-on-error: true
         run: |
           mkdir -p /tmp/shots; cp app/build/screens/*.png /tmp/shots/ 2>/dev/null || true
-          grep -E "^e: |FAILED|Exception|What went wrong" shots.log | head -60 > /tmp/shots/log.txt 2>/dev/null || true
+          grep -E "^e: |FAILED|Exception|What went wrong|PLAN " shots.log | head -80 > /tmp/shots/log.txt 2>/dev/null || true
           git config user.name ci; git config user.email ci@users.noreply.github.com
           git stash -u -q || true
           git checkout --orphan ci-shots

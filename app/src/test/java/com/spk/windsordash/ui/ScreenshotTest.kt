@@ -50,5 +50,11 @@ class ScreenshotTest {
         ),
     )
 
+    @Test fun plan() = captureRoboImage("build/screens/4-plan.png") {
+        MaterialTheme(colorScheme = darkColorScheme(primary = Teal, background = Bg, surface = Card)) {
+            PlanScreen(driving.copy(sample = sample.copy(socPct = 35.0)), {}, initialKm = "300", initialAtCharger = true, initialWh = "135")
+        }
+    }
+
     @Test fun offline() = shot("3-not-live", driving.copy(status = LinkStatus.IDLE, statusText = "Not connected", sample = sample.copy(at = now - 3_600_000L), powerKw = null))
 }

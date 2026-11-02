@@ -205,6 +205,7 @@ class MainActivity : ComponentActivity() {
                 when (page) {
                     "report" -> ReportScreen(onBack = { page = "home" })
                     "charges" -> ChargesScreen(onBack = { page = "home" })
+                    "plan" -> PlanScreen(st, onBack = { page = "home" })
                     else -> Screen(
                     st,
                     onConnect = {
@@ -215,6 +216,7 @@ class MainActivity : ComponentActivity() {
                     onPick = { withPermissions { picking = true } },
                     onReport = { page = "report" },
                     onCharges = { page = "charges" },
+                    onPlan = { page = "plan" },
                 )
                 }
                 if (picking) PickerDialog(
@@ -234,7 +236,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 internal fun Screen(
     st: DashState, onConnect: () -> Unit, onDisconnect: () -> Unit, onPick: () -> Unit,
-    onReport: () -> Unit = {}, onCharges: () -> Unit = {},
+    onReport: () -> Unit = {}, onCharges: () -> Unit = {}, onPlan: () -> Unit = {},
     showHousekeeping: Boolean = true,
 ) {
     val s = st.sample
@@ -285,26 +287,30 @@ internal fun Screen(
             )
         }
 
-        // ── Hero: SoC ring + range ─────────────────────────────
-        Panel(accent = socColor(s.socPct)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SocRing(s.socPct, st.charging)
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Label("Range est.")
-                    Value(st.rangeKm?.toString() ?: "–", "km", size = 38.sp, color = Teal, weight = FontWeight.Light)
-                    Text("at ${st.effWhKm?.roundToInt() ?: "–"} Wh/km", color = Faint, fontSize = 11.sp)
-                    Text(st.effSource, color = Faint, fontSize = 11.sp, maxLines = 1)
-                    Spacer(Modifier.height(14.dp))
-                    Label("Energy left")
-                    Value(s.energyLeftKwh?.let { "%.1f".format(it) } ?: "–", "kWh", size = 22.sp)
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Column { Label("SoH"); Value(s.sohPct?.roundToInt()?.toString() ?: "–", "%", size = 17.sp) }
-                        Column { Label("Pack*"); Value(s.packTempMaxC?.toString() ?: "–", "°C", size = 17.sp, color = tempColor(s.packTempMaxC)) }
-                    }
-                }
+        // ── Trip cluster: what the car's console doesn't show ──
+        Panel(accent = Cyan) {
+            val t = st.trip
+            Heading("Trip", dot = Cyan) {
+                Text("Reset", color = Teal, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(CircleShape).clickable { Dash.resetTrip() }.padding(horizontal = 8.dp, vertical = 2.dp))
             }
+            Tiles {
+                Tile("Distance", t?.let { "%.1f".format(it.km) } ?: "–", "km", sub = t?.distSource)
+                Tile("Efficiency", t?.whPerKm?.roundToInt()?.toString() ?: "–", "Wh/km", color = Cyan,
+                    sub = st.effWhKm?.let { "now ${it.roundToInt()} · ${st.effSource}" })
+            }
+            Spacer(Modifier.height(10.dp))
+            Tiles {
+                Tile("Avg speed", t?.avgMovingKmh?.let { "%.0f".format(it) } ?: "–", "km/h",
+                    sub = t?.avgOverallKmh()?.let { "%.0f incl. stops".format(it) })
+                Tile("Trip time", t?.let { minutes((System.currentTimeMillis() - it.startedAt) / 60_000) } ?: "–",
+                    sub = t?.let { "moving " + minutes(it.movingMs / 60_000) })
+            }
+            Spacer(Modifier.height(6.dp))
+            Grid(
+                "Energy used" to (t?.let { "%.2f kWh".format(it.netWh / 1000) } ?: "–"),
+                "Regen" to (t?.let { "%.2f kWh".format(it.regenWh / 1000) } ?: "–"),
+            )
         }
 
         // ── Power ──────────────────────────────────────────────
@@ -370,32 +376,36 @@ internal fun Screen(
             }
         }
 
-        // ── Trip ───────────────────────────────────────────────
+        // ── Plan ───────────────────────────────────────────────
         Panel {
-            val t = st.trip
-            Heading("Trip", dot = Cyan) {
-                Text("Reset", color = Teal, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clip(CircleShape).clickable { Dash.resetTrip() }.padding(horizontal = 8.dp, vertical = 2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(onClick = onPlan)) {
+                Column(Modifier.weight(1f)) {
+                    Label("Plan charging", color = Ink.copy(alpha = 0.85f))
+                    Spacer(Modifier.height(4.dp))
+                    Text("Long drive? One long top-up or two short ones — see which is quicker.", color = Dim, fontSize = 13.sp)
+                }
+                Spacer(Modifier.width(10.dp))
+                PillButton("Plan", filled = true, onClick = onPlan)
             }
-            Tiles {
-                Tile("Distance", t?.let { "%.1f".format(it.km) } ?: "–", "km", sub = t?.distSource)
-                Tile("Efficiency", t?.whPerKm?.roundToInt()?.toString() ?: "–", "Wh/km", color = Cyan)
-            }
-            Spacer(Modifier.height(6.dp))
-            Grid(
-                "Energy used" to (t?.let { "%.2f kWh".format(it.netWh / 1000) } ?: "–"),
-                "Regen" to (t?.let { "%.2f kWh".format(it.regenWh / 1000) } ?: "–"),
-                "Avg speed (moving)" to (t?.avgMovingKmh?.let { "%.0f km/h".format(it) } ?: "–"),
-                "Avg incl. stops" to (t?.avgOverallKmh()?.let { "%.0f km/h".format(it) } ?: "–"),
-                "Moving time" to (t?.let { minutes(it.movingMs / 60_000) } ?: "–"),
-                "Trip time" to (t?.let { minutes((System.currentTimeMillis() - it.startedAt) / 60_000) } ?: "–"),
-            )
         }
 
         // ── Battery ────────────────────────────────────────────
         Panel {
             val delta = st.cellDeltaMv
-            Heading("Battery", dot = Green)
+            Heading("Battery", dot = Green) {
+                Value(s.socPct?.roundToInt()?.toString() ?: "–", "%", size = 15.sp, color = socColor(s.socPct))
+            }
+            Row(verticalAlignment = Alignment.Bottom) {
+                Column(Modifier.weight(1f)) {
+                    Label("Energy left")
+                    Value(s.energyLeftKwh?.let { "%.1f".format(it) } ?: "–", "kWh", size = 22.sp)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Label("Range at your pace")
+                    Value(st.rangeKm?.toString() ?: "–", "km est.", size = 22.sp, color = Teal)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
             Tiles {
                 Tile("Pack temp*", s.packTempMaxC?.toString() ?: "–", "°C", color = tempColor(s.packTempMaxC),
                     sub = s.packTempMinC?.let { "low $it °C" })
