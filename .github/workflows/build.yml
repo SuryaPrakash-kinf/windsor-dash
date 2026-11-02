@@ -29,6 +29,29 @@ jobs:
           set -o pipefail
           gradle --no-daemon assembleRelease 2>&1 | tee build.log
 
+      - name: Render screenshots
+        id: shots
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle --no-daemon testDebugUnitTest --tests '*ScreenshotTest*' 2>&1 | tee shots.log
+
+      - name: Publish screenshots
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/shots; cp app/build/screens/*.png /tmp/shots/ 2>/dev/null || true
+          grep -E "^e: |FAILED|Exception|What went wrong" shots.log | head -60 > /tmp/shots/log.txt 2>/dev/null || true
+          git config user.name ci; git config user.email ci@users.noreply.github.com
+          git stash -u -q || true
+          git checkout --orphan ci-shots
+          git rm -rfq --cached . >/dev/null
+          cp /tmp/shots/* .
+          git add -f *.png log.txt 2>/dev/null || git add -f log.txt
+          git commit -qm "build ${{ github.run_number }} screenshots"
+          git push -f origin ci-shots
+          git checkout -q -f main
+
       - name: Publish build log on failure
         if: failure()
         run: |

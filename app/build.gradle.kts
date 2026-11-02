@@ -12,8 +12,8 @@ android {
         applicationId = "com.spk.windsordash"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.10.2"
+        versionCode = 29
+        versionName = "0.11.0"
     }
 
     signingConfigs {
@@ -37,6 +37,12 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all { it.systemProperty("roborazzi.test.record", "true") }
+        }
+    }
 }
 
 dependencies {
@@ -54,4 +60,12 @@ dependencies {
 
     // Android Auto (Car App Library)
     implementation("androidx.car.app:app:1.4.0")
+
+    // Screenshot tests (CI renders the screens to PNG; not part of the app)
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.32.2")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.32.2")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

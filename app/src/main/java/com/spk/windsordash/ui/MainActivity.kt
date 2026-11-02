@@ -7,6 +7,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,14 +80,7 @@ import com.spk.windsordash.service.LinkService
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-internal val Bg = Color(0xFF0B0F14)
-internal val Card = Color(0xFF141B24)
-internal val Line = Color(0xFF232E3B)
-internal val Dim = Color(0xFF8A97A8)
-internal val Teal = Color(0xFF2DD4BF)
-internal val Amber = Color(0xFFFBBF24)
-internal val Red = Color(0xFFF87171)
-internal val Green = Color(0xFF4ADE80)
+
 
 class MainActivity : ComponentActivity() {
     private val scanner = AdapterScanner()
@@ -235,78 +232,81 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun Screen(
+internal fun Screen(
     st: DashState, onConnect: () -> Unit, onDisconnect: () -> Unit, onPick: () -> Unit,
     onReport: () -> Unit = {}, onCharges: () -> Unit = {},
+    showHousekeeping: Boolean = true,
 ) {
     val s = st.sample
     val running = st.status != LinkStatus.IDLE
     Column(
-        Modifier.fillMaxSize().background(Bg).statusBarsPadding().navigationBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        Modifier.fillMaxSize().background(Bg)
+            .background(Brush.radialGradient(listOf(Teal.copy(alpha = 0.10f), Color.Transparent), center = Offset(900f, -100f), radius = 1100f))
+            .statusBarsPadding().navigationBarsPadding()
+            .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        // Header
+        // ── Header ─────────────────────────────────────────────
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Windsor Dash", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val dot = when (st.status) {
-                        LinkStatus.LIVE -> Green; LinkStatus.DEMO -> Amber
-                        LinkStatus.CONNECTING, LinkStatus.RETRYING -> Amber; LinkStatus.IDLE -> Dim
-                    }
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
-                    Spacer(Modifier.size(6.dp))
-                    Text(st.statusText, color = Dim, fontSize = 13.sp, maxLines = 2)
-                }
+                Text("WINDSOR", color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
+                Text("DASH", color = Teal, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 6.sp)
             }
-            if (running) OutlinedButton(onClick = onDisconnect) { Text("Stop") }
-            else Button(onClick = onConnect) { Text("Connect") }
+            if (running) PillButton("Stop", onClick = onDisconnect)
+            else PillButton("Connect", filled = true, onClick = onConnect)
         }
-        Text(
-            "Adapter: ${st.adapter?.name ?: "none chosen"}  ·  change",
-            color = Teal, fontSize = 13.sp, modifier = Modifier.clickable(onClick = onPick)
-        )
-        AutoConnectLine()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val dot = when (st.status) {
+                LinkStatus.LIVE -> Green; LinkStatus.DEMO -> Amber
+                LinkStatus.CONNECTING, LinkStatus.RETRYING -> Amber; LinkStatus.IDLE -> Dim
+            }
+            Box(Modifier.weight(1f, fill = false)) { StatusPill(st.statusText, dot) }
+            Spacer(Modifier.width(8.dp))
+            st.odoKm?.let {
+                Text("%,d km".format(it.roundToInt()) + if (st.odoSource == OdoSource.CAR) "" else " · gps",
+                    color = Dim, fontSize = 12.sp, style = Num)
+            }
+        }
+        if (showHousekeeping) AutoConnectLine()
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onReport) { Text("Report") }
-            OutlinedButton(onClick = onCharges) { Text("Charging log") }
+            PillButton("Report", onClick = onReport)
+            PillButton("Charging log", onClick = onCharges)
+            PillButton(st.adapter?.name?.take(14) ?: "Adapter", onClick = onPick)
         }
 
         // Not live: say so, so old numbers aren't mistaken for current ones
         if (!st.hasData && s.at > 0) {
             Text(
-                "Not live — showing the last reading from " +
+                "Not live — last reading " +
                     java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(s.at)),
                 color = Amber, fontSize = 13.sp,
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(0x22FBBF24)).padding(10.dp)
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Amber.copy(alpha = 0.10f))
+                    .border(1.dp, Amber.copy(alpha = 0.3f), RoundedCornerShape(14.dp)).padding(12.dp)
             )
         }
 
-        // Hero: SoC + range
-        Panel {
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(s.socPct?.let { "${it.roundToInt()}" } ?: "–", fontSize = 64.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                Text("%", fontSize = 24.sp, color = Dim, modifier = Modifier.padding(bottom = 12.dp, start = 2.dp))
-                Spacer(Modifier.weight(1f))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(st.rangeKm?.let { "$it km" } ?: "– km", fontSize = 28.sp, fontWeight = FontWeight.SemiBold, color = Teal)
-                    Text("est. range at ${st.effWhKm?.roundToInt() ?: "–"} Wh/km (${st.effSource})", fontSize = 11.sp, color = Dim)
+        // ── Hero: SoC ring + range ─────────────────────────────
+        Panel(accent = socColor(s.socPct)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SocRing(s.socPct, st.charging)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Label("Range est.")
+                    Value(st.rangeKm?.toString() ?: "–", "km", size = 38.sp, color = Teal, weight = FontWeight.Light)
+                    Text("at ${st.effWhKm?.roundToInt() ?: "–"} Wh/km · ${st.effSource}", color = Faint, fontSize = 11.sp)
+                    Spacer(Modifier.height(14.dp))
+                    Label("Energy left")
+                    Value(s.energyLeftKwh?.let { "%.1f".format(it) } ?: "–", "kWh", size = 22.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Column { Label("SoH"); Value(s.sohPct?.roundToInt()?.toString() ?: "–", "%", size = 17.sp) }
+                        Column { Label("Pack*"); Value(s.packTempMaxC?.toString() ?: "–", "°C", size = 17.sp, color = tempColor(s.packTempMaxC)) }
+                    }
                 }
             }
-            LinearProgressIndicator(
-                progress = { ((s.socPct ?: 0.0) / 100).toFloat() },
-                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
-                color = if ((s.socPct ?: 100.0) < 20) Red else Teal, trackColor = Line,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                s.energyLeftKwh?.let { "%.1f kWh left of %.1f".format(it, WindsorProfile.RATED_KWH) } ?: "",
-                color = Dim, fontSize = 13.sp
-            )
         }
 
-        // Power
+        // ── Power ──────────────────────────────────────────────
         Panel {
             val kw = if (st.hasData) st.powerKw else null   // power is instantaneous: blank when not live
             val label = when {
@@ -314,44 +314,49 @@ private fun Screen(
                 st.charging -> "Charging"
                 kw < -0.2 && st.parked -> "Charging (starting)"
                 kw < -0.2 -> "Regen"
-                else -> "Power"
+                else -> "Drive"
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            val col = when { kw == null -> Ink; kw < -0.2 -> Green; kw > 30 -> Orange; else -> Ink }
+            Row(verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
-                    Text(label, color = Dim, fontSize = 13.sp)
-                    Text(kw?.let { "%.1f kW".format(abs(it)) } ?: "–", fontSize = 34.sp, fontWeight = FontWeight.SemiBold,
-                        color = if (kw != null && kw < 0) Green else Color.White)
+                    Label(label, color = if (kw != null && kw < -0.2) Green else Dim)
+                    Value(kw?.let { "%.1f".format(abs(it)) } ?: "–", "kW", size = 40.sp, color = col, weight = FontWeight.Light)
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text(s.packV?.let { "%.0f V".format(it) } ?: "– V", color = Color.White, fontFamily = FontFamily.Monospace)
-                    Text(s.currentA?.takeIf { st.hasData }?.let { "%.1f A".format(it) } ?: "– A", color = Color.White, fontFamily = FontFamily.Monospace)
+                    Value(s.packV?.let { "%.0f".format(it) } ?: "–", "V", size = 16.sp, weight = FontWeight.Medium)
+                    Value(s.currentA?.takeIf { st.hasData }?.let { "%.1f".format(it) } ?: "–", "A", size = 16.sp, weight = FontWeight.Medium)
+                    st.speedKmh?.takeIf { st.hasData }?.let { Value("%.0f".format(it), "km/h", size = 16.sp, weight = FontWeight.Medium, color = Dim) }
                 }
             }
+            Spacer(Modifier.height(14.dp))
+            PowerMeter(kw)
         }
 
-        // Charging
+        // ── Charging ───────────────────────────────────────────
         st.charge?.let { c ->
-            Panel {
-                Text(
+            Panel(accent = if (c.active) Green else null) {
+                Heading(
                     when {
-                        c.active && st.status != LinkStatus.LIVE -> "Charging — car not answering (fills in on reconnect)"
+                        c.active && st.status != LinkStatus.LIVE -> "Charging · car not answering"
                         c.active -> "Charging session"
                         else -> "Last charge"
                     },
-                    color = if (c.active && st.status != LinkStatus.LIVE) Amber else Dim, fontSize = 13.sp
+                    dot = if (c.active) Green else Dim,
                 )
-                c.gapNote?.let { Text(it, color = Dim, fontSize = 11.sp) }
-                Spacer(Modifier.height(4.dp))
-                Grid(
-                    "Added" to "%.2f kWh".format(c.addedKwh),
-                    "Peak" to "%.1f kW".format(c.peakKw),
-                    "SoC" to "${c.startSoc?.roundToInt() ?: "–"} → ${(c.endSoc ?: s.socPct)?.roundToInt() ?: "–"} %",
-                    "Time" to minutes(((c.endedAt ?: System.currentTimeMillis()) - c.startedAt) / 60_000),
-                )
+                c.gapNote?.let { Text(it, color = Dim, fontSize = 11.sp); Spacer(Modifier.height(8.dp)) }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Tile("Added", "%.1f".format(c.addedKwh), "kWh", color = Green)
+                    Tile("Peak", "%.0f".format(c.peakKw), "kW")
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Tile("SoC", "${c.startSoc?.roundToInt() ?: "–"}→${(c.endSoc ?: s.socPct)?.roundToInt() ?: "–"}", "%")
+                    Tile("Time", minutes(((c.endedAt ?: System.currentTimeMillis()) - c.startedAt) / 60_000))
+                }
                 if (c.active) {
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("To", color = Dim)
+                        Label("To")
                         for (t in listOf(80, 90, 100)) FilterChip(
                             selected = st.targetSoc == t, onClick = { Dash.setTarget(t) }, label = { Text("$t%") })
                         Spacer(Modifier.weight(1f))
@@ -361,16 +366,19 @@ private fun Screen(
             }
         }
 
-        // Trip
+        // ── Trip ───────────────────────────────────────────────
         Panel {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Trip", color = Dim, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                TextButton(onClick = { Dash.resetTrip() }) { Text("Reset") }
-            }
             val t = st.trip
+            Heading("Trip", dot = Cyan) {
+                Text("Reset", color = Teal, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(CircleShape).clickable { Dash.resetTrip() }.padding(horizontal = 8.dp, vertical = 2.dp))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Tile("Distance", t?.let { "%.1f".format(it.km) } ?: "–", "km", sub = t?.distSource)
+                Tile("Efficiency", t?.whPerKm?.roundToInt()?.toString() ?: "–", "Wh/km", color = Cyan)
+            }
+            Spacer(Modifier.height(6.dp))
             Grid(
-                "Distance" to (t?.let { "%.1f km (%s)".format(it.km, it.distSource) } ?: "–"),
-                "Efficiency" to (t?.whPerKm?.let { "${it.roundToInt()} Wh/km" } ?: "–"),
                 "Energy used" to (t?.let { "%.2f kWh".format(it.netWh / 1000) } ?: "–"),
                 "Regen" to (t?.let { "%.2f kWh".format(it.regenWh / 1000) } ?: "–"),
                 "Avg speed (moving)" to (t?.avgMovingKmh?.let { "%.0f km/h".format(it) } ?: "–"),
@@ -380,44 +388,59 @@ private fun Screen(
             )
         }
 
-        // Battery health
+        // ── Battery ────────────────────────────────────────────
         Panel {
-            Text("Battery", color = Dim, fontSize = 13.sp)
-            Spacer(Modifier.height(4.dp))
             val delta = st.cellDeltaMv
+            Heading("Battery", dot = Green)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Tile("Pack temp*", s.packTempMaxC?.toString() ?: "–", "°C", color = tempColor(s.packTempMaxC),
+                    sub = s.packTempMinC?.let { "low $it °C" })
+                Tile("Coolant in*", s.coolantInC?.toString() ?: "–", "°C", color = tempColor(s.coolantInC),
+                    sub = s.coolantOutC?.let { "out $it °C" })
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
+                Column(Modifier.weight(1f)) {
+                    Label("Cell spread")
+                    Value(delta?.toString() ?: "–", "mV", size = 22.sp)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(s.maxCellMv?.let { "▲ $it mV" + (s.maxCellId?.let { id -> "  #$id" } ?: "") } ?: "", color = Dim, fontSize = 12.sp, style = Num)
+                    Text(s.minCellMv?.let { "▼ $it mV" + (s.minCellId?.let { id -> "  #$id" } ?: "") } ?: "", color = Dim, fontSize = 12.sp, style = Num)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            SpreadBar(delta)
+            Spacer(Modifier.height(6.dp))
             Grid(
                 "Health (SoH)" to (s.sohPct?.let { "${it.roundToInt()} %" } ?: "–"),
-                "Capacity (calc.)" to (st.capacityKwh?.let { "%.1f kWh · %.0f%%".format(it, it / WindsorProfile.RATED_KWH * 100) } ?: "at ≥80 % SoC"),
-                "Highest cell" to (s.maxCellMv?.let { "$it mV" + (s.maxCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
-                "Lowest cell" to (s.minCellMv?.let { "$it mV" + (s.minCellId?.let { id -> " · #$id" } ?: "") } ?: "–"),
-                "Cell spread" to (delta?.let { "$it mV" } ?: "–"),
+                "Capacity (calc.)" to (st.capacityKwh?.let { "%.1f kWh".format(it) } ?: "at ≥80 % SoC"),
                 "12 V battery" to (s.aux12V?.let { "%.1f V".format(it) } ?: "–"),
-                "Pack temp*" to (s.packTempMaxC?.let { mx -> "$mx °C high" + (s.packTempMinC?.let { " · $it low" } ?: "") } ?: "–"),
-                "Coolant*" to (s.coolantInC?.let { ci -> "$ci °C in" + (s.coolantOutC?.let { " · $it out" } ?: "") } ?: "–"),
+                "Pack range" to (s.packTempMinC?.let { lo -> "$lo–${s.packTempMaxC ?: "–"} °C" } ?: "–"),
             )
-            Spacer(Modifier.height(4.dp))
-            Text("* Temperatures not yet confirmed: the decoding fits a DC-charge log but still needs a check against a cold car.", color = Dim, fontSize = 11.sp)
+            Text("* Temperatures unconfirmed until checked against a cold car.", color = Faint, fontSize = 11.sp)
             if (delta != null && delta > 50) {
                 Spacer(Modifier.height(6.dp))
                 Text("Cell spread above 50 mV — worth watching. LFP spread reads largest near empty and full.", color = Amber, fontSize = 12.sp)
             }
         }
 
-        RunsPanel(st)
-        AllCellsPanel(st.sample)
-        CellWatchPanel()
-        OdometerPanel(st)
-        LogsPanel()
+        if (showHousekeeping) {
+            RunsPanel(st)
+            Expander("Cells", "All 98 cell voltages and which ones lead or lag") {
+                AllCellsPanel(st.sample)
+                CellWatchPanel()
+            }
+            Expander("Odometer & logs", "Car odometer, local CSV logs, research capture") {
+                OdometerPanel(st)
+                LogsPanel()
+            }
+        }
 
         Text(
-            "All battery and cell figures are the BMS's own readings, shown as reported — nothing is " +
-                "interpolated or guessed. Only range and charge time are estimates (marked est.).",
-            color = Dim, fontSize = 12.sp
-        )
-        Text(
-            "Android Auto: open the Windsor Dash tile in the car's app launcher. Sideloaded apps need " +
-                "Android Auto → Settings → tap Version 10× → ⋮ Developer settings → Unknown sources.",
-            color = Dim, fontSize = 12.sp
+            "Battery and cell figures are the BMS's own readings, shown as reported. " +
+                "Only range and charge time are estimates (marked est.).",
+            color = Faint, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)
         )
     }
 }
@@ -730,28 +753,6 @@ private fun LogsPanel() {
 }
 
 internal fun minutes(m: Long): String = if (m >= 60) "${m / 60} h ${m % 60} min" else "$m min"
-
-@Composable
-internal fun Panel(content: @Composable () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp)
-    ) { content() }
-}
-
-@Composable
-private fun Grid(vararg cells: Pair<String, String>) {
-    cells.toList().chunked(2).forEach { row ->
-        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-            row.forEach { (k, v) ->
-                Column(Modifier.weight(1f)) {
-                    Text(k, color = Dim, fontSize = 12.sp)
-                    Text(v, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                }
-            }
-            if (row.size == 1) Spacer(Modifier.weight(1f))
-        }
-    }
-}
 
 @Composable
 private fun PickerDialog(scanner: AdapterScanner, onDismiss: () -> Unit, onChosen: (AdapterRef) -> Unit) {
