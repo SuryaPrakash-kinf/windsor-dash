@@ -87,14 +87,14 @@ fun PlanScreen(st: DashState, onBack: () -> Unit, initialKm: String = "", initia
         Panel(accent = Cyan) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Field("Km to go", km, Modifier.weight(1f)) { km = it }
-                Field("SoC now %", socOverride, Modifier.weight(1f), hint = soc?.roundToInt()?.toString() ?: "") { socOverride = it }
+                Field("SoC %" + (st.sample.socPct?.let { " · car ${it.roundToInt()}" } ?: ""), socOverride, Modifier.weight(1f)) { socOverride = it }
             }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Field("Wh/km", wh, Modifier.weight(1f), hint = autoWh.roundToInt().toString()) { wh = it }
+                Field("Wh/km · ${whSrc.take(12)} ${autoWh.roundToInt()}", wh, Modifier.weight(1f)) { wh = it }
                 Field("Arrive with %", reserve, Modifier.weight(1f)) { reserve = it }
             }
-            Text("Wh/km from $whSrc unless you type one. Highway runs have been 120–147 Wh/km for you.", color = Faint, fontSize = 11.sp)
+            Text("Leave SoC and Wh/km blank to use the car and your driving. Your highway runs have been 120–147 Wh/km.", color = Faint, fontSize = 11.sp)
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Field("Reach charger at ≥ %", minAt, Modifier.weight(1f)) { minAt = it }
@@ -125,7 +125,8 @@ fun PlanScreen(st: DashState, onBack: () -> Unit, initialKm: String = "", initia
             val needKwh = d * whUsed / 1000
             Text("Needs about %.1f kWh for %.0f km at %.0f Wh/km.".format(needKwh, d, whUsed), color = Dim, fontSize = 13.sp)
             if (opts.isEmpty()) Text("No plan fits — check the numbers (a stop can't charge past 100 %).", color = Amber, fontSize = 13.sp)
-            opts.forEachIndexed { i, o -> OptionCard(o, best = i == 0 && opts.size > 1) }
+            val oneStopCharge = opts.firstOrNull { it.title == "1 stop" }?.chargeMin
+            opts.forEachIndexed { i, o -> OptionCard(o, best = i == 0 && opts.size > 1, oneStopCharge = oneStopCharge) }
             Text(
                 "Charge speed: " + if (ChargeCurve.learnedBands >= 8) "from your own DC charges." else
                     "Windsor defaults (≈55 kW to 80 %, slowing above) until more of your DC charges are logged — times marked est.",
@@ -137,7 +138,7 @@ fun PlanScreen(st: DashState, onBack: () -> Unit, initialKm: String = "", initia
 }
 
 @Composable
-private fun OptionCard(o: PlanOption, best: Boolean) {
+private fun OptionCard(o: PlanOption, best: Boolean, oneStopCharge: Double? = null) {
     Panel(accent = if (best) Teal else null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(o.title, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -147,8 +148,8 @@ private fun OptionCard(o: PlanOption, best: Boolean) {
         Spacer(Modifier.height(12.dp))
         val est = if (o.usesDefaultCurve) " est." else ""
         Tiles {
-            Tile("Charging", "${ChargePlanner.mins(o.chargeMin)}", "min$est")
-            Tile("Incl. stops", "${ChargePlanner.mins(o.totalMin)}", "min")
+            Tile("Charge", "${ChargePlanner.mins(o.chargeMin)}", "min$est")
+            Tile("Total", "${ChargePlanner.mins(o.totalMin)}", "min", sub = "with stops")
             Tile("Arrive", "${o.arrivalPct.roundToInt()}", "%", color = if (o.arrivalPct < 10) Amber else Green)
         }
         if (o.stops.isNotEmpty()) Spacer(Modifier.height(12.dp))
@@ -167,6 +168,11 @@ private fun OptionCard(o: PlanOption, best: Boolean) {
             }
         }
         o.note?.let { Spacer(Modifier.height(6.dp)); Text(it, color = Faint, fontSize = 12.sp) }
+        if (oneStopCharge != null && o.stops.size > 1 && o.chargeMin <= oneStopCharge + 3) {
+            Spacer(Modifier.height(6.dp))
+            Text("Charging time is no more than 1 stop (${ChargePlanner.mins(o.chargeMin)} vs ${ChargePlanner.mins(oneStopCharge)} min). " +
+                "If you'd stop for a break anyway, this costs nothing extra — and keeps each stop short.", color = Green.copy(alpha = 0.85f), fontSize = 12.sp)
+        }
     }
 }
 
