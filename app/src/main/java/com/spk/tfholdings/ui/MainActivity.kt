@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 while (true) {
                     val last = state.value.pricesAt ?: 0L
-                    if (snapshot != null && System.currentTimeMillis() - last > 55_000) refresh()
+                    if (System.currentTimeMillis() - last > 55_000) refresh()
                     delay(60_000)
                 }
             }
@@ -114,16 +114,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refresh() {
-        val snap = snapshot ?: return
+        val snap = snapshot
         if (state.value.refreshing) return
         state.value = state.value.copy(refreshing = true)
         lifecycleScope.launch {
-            val fresh = Prices.fetchAll(snap.holdings.map { it.ticker }.filterNot { Portfolio.isManual(it) })
+            val held = snap?.holdings?.map { it.ticker }?.filterNot { Portfolio.isManual(it) } ?: emptyList()
+            val fresh = Prices.fetchAll(held + Prices.INDICES.map { it.first })
             if (fresh.isNotEmpty()) {
                 quotes = quotes + fresh
                 withContext(Dispatchers.IO) { store.saveQuotes(quotes) }
             }
-            val msg = if (fresh.isEmpty() && snap.holdings.any { !Portfolio.isManual(it.ticker) }) "No prices came back. Check the internet connection and press Refresh." else null
+            val msg = if (fresh.isEmpty()) "No prices came back. Check the internet connection and press Refresh." else null
             publish(pricesAt = if (fresh.isNotEmpty()) System.currentTimeMillis() else state.value.pricesAt, message = msg, live = fresh.keys)
         }
     }
@@ -133,6 +134,7 @@ class MainActivity : ComponentActivity() {
         val snap = snapshot
         val usable = if (live == null) quotes else quotes.filterKeys { it in live }
         state.value = UiState(
+            indices = Prices.INDICES.map { (sym, name) -> IndexLine(name, quotes[sym]) },
             snapshot = snap,
             portfolio = snap?.let { Portfolio.build(it, usable) },
             refreshing = false,

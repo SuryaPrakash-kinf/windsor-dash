@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.spk.tfholdings.data.Fmt
 import com.spk.tfholdings.data.Group
 import com.spk.tfholdings.data.Portfolio
+import com.spk.tfholdings.data.Quote
 import com.spk.tfholdings.data.Row as HRow
 import com.spk.tfholdings.data.Snapshot
 import java.text.SimpleDateFormat
@@ -64,7 +65,10 @@ private fun tone(x: Double?) = when {
     else -> Muted
 }
 
+data class IndexLine(val name: String, val quote: Quote?)
+
 data class UiState(
+    val indices: List<IndexLine> = emptyList(),
     val snapshot: Snapshot? = null,
     val portfolio: Portfolio? = null,
     val refreshing: Boolean = false,
@@ -81,6 +85,7 @@ fun Screen(st: UiState, onRefresh: () -> Unit, onImport: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item { TopBar(st, onRefresh, onImport) }
+        if (st.indices.isNotEmpty()) item { Indices(st.indices) }
         st.message?.let { msg -> item { Banner(msg, Warn) } }
         if (p == null || st.snapshot == null) {
             item { Empty(onImport) }
@@ -121,6 +126,30 @@ private fun TopBar(st: UiState, onRefresh: () -> Unit, onImport: () -> Unit) {
         Chip(if (st.refreshing) "Updating…" else "↻ Refresh", primary = true, enabled = !st.refreshing, onClick = onRefresh)
         Spacer(Modifier.width(8.dp))
         Chip("Import", primary = false, enabled = true, onClick = onImport)
+    }
+}
+
+@Composable
+private fun Indices(lines: List<IndexLine>) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    lines.forEach { l ->
+        val q = l.quote
+        val chg = if (q?.prev != null && q.prev > 0) q.price - q.prev else null
+        val pct = if (chg != null) chg / q!!.prev!! * 100 else null
+        Column(
+            Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Card)
+                .border(1.dp, Line, RoundedCornerShape(14.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            Label(l.name)
+            Text(q?.let { Fmt.level(it.price) } ?: "–", color = Ink, fontSize = 18.sp, style = Num)
+            Text(
+                if (chg != null) "${Fmt.level(chg, sign = true)}  ${Fmt.pct(pct)}" else " ",
+                color = tone(chg), fontSize = 12.sp, style = Num,
+            )
+        }
     }
 }
 

@@ -30,7 +30,11 @@ object Prices {
 
     fun isFund(ticker: String) = ticker.isNotEmpty() && ticker.all { it.isDigit() }
 
+    /** Market indices shown at the top (Yahoo symbols). */
+    val INDICES = listOf("^NSEI" to "Nifty 50", "^BSESN" to "Sensex")
+
     fun yahooSymbols(ticker: String): List<String> {
+        if (ticker.startsWith("^")) return listOf(ticker)
         val s = ticker.uppercase().removePrefix("NSE:").removePrefix("BSE:").trim()
         return if (s.startsWith("SGB")) listOf("$s.BO", "$s.NS") else listOf("$s.NS", "$s.BO")
     }

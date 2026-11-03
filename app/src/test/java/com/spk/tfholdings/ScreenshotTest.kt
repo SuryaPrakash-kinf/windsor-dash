@@ -31,7 +31,13 @@ class ScreenshotTest {
 
     @Test fun holdings() = shot(
         "1-holdings",
-        UiState(snapshot = snap, portfolio = Portfolio.build(snap, Samples.quotes), pricesAt = 1793690000000L),
+        UiState(
+            indices = listOf(
+                com.spk.tfholdings.ui.IndexLine("Nifty 50", com.spk.tfholdings.data.Quote(23646.2, 23440.8, 0L)),
+                com.spk.tfholdings.ui.IndexLine("Sensex", com.spk.tfholdings.data.Quote(76362.61, 75692.78, 0L)),
+            ),
+            snapshot = snap, portfolio = Portfolio.build(snap, Samples.quotes), pricesAt = 1793690000000L,
+        ),
     )
 
     @Test fun empty() = shot("2-empty", UiState())

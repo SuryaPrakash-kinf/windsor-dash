@@ -85,6 +85,9 @@ class PortfolioTest {
         assertEquals(92.8, Prices.parseMfapi(m)!!.price, 1e-9)
         assertEquals(listOf("SGBX.BO", "SGBX.NS"), Prices.yahooSymbols("SGBX"))
         assertTrue(Prices.isFund("120503"))
+        assertEquals(listOf("^NSEI"), Prices.yahooSymbols("^NSEI"))
+        assertEquals("+205.40", Fmt.level(205.4, sign = true))
+        assertEquals("23,646.20", Fmt.level(23646.2))
     }
 
     @Test fun indianFormatting() {

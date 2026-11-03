@@ -54,6 +54,9 @@ object Fmt {
 
     fun price(x: Double): String = inr(x, 2)
 
+    /** 23,646.20 (Indian grouping, no ₹), for index levels. */
+    fun level(x: Double, sign: Boolean = false): String = inr(x, 2, sign).replace("₹", "")
+
     fun qty(x: Double): String =
         if (x == Math.floor(x)) String.format(Locale.US, "%,.0f", x) else String.format(Locale.US, "%,.3f", x)
 
