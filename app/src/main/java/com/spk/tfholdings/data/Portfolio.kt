@@ -2,9 +2,9 @@ package com.spk.tfholdings.data
 
 /** A holding valued at its live price (or, when no live price came back, the price in the export). */
 data class Row(val h: Holding, val price: Double, val prev: Double?, val live: Boolean) {
-    /** SGBs trade rarely: their "previous close" can be days or weeks old, so a daily change would be fake. */
-    val illiquid: Boolean get() = h.ticker.startsWith("SGB")
-    private val hasDay: Boolean get() = live && !illiquid && prev != null && prev > 0
+    /** SGBs are priced by hand in TechnoFunda: the phone uses that price and shows no daily change. */
+    val manual: Boolean get() = Portfolio.isManual(h.ticker)
+    private val hasDay: Boolean get() = live && !manual && prev != null && prev > 0
     val value: Double get() = h.qty * price
     val dayChange: Double? get() = if (hasDay) h.qty * (price - prev!!) else null
     val dayPct: Double? get() = if (hasDay) (price / prev!! - 1) * 100 else null
@@ -41,6 +41,9 @@ data class Portfolio(
 
         private fun rank(name: String) = ORDER.indexOf(name).let { if (it < 0) 99 else it }
 
+        /** Holdings whose price you set by hand in TechnoFunda (SGBs): never fetched live. */
+        fun isManual(ticker: String) = ticker.uppercase().startsWith("SGB")
+
         fun label(bucket: String) = when (bucket) {
             "Gold/MF" -> "Gold & funds"
             else -> bucket
@@ -48,7 +51,7 @@ data class Portfolio(
 
         fun build(s: Snapshot, quotes: Map<String, Quote>): Portfolio {
             val rows = s.holdings.map { h ->
-                val q = quotes[h.ticker]
+                val q = if (isManual(h.ticker)) null else quotes[h.ticker]
                 if (q != null) Row(h, q.price, q.prev, live = true)
                 else Row(h, if (h.lastPrice > 0) h.lastPrice else h.avgCost, h.prevClose.takeIf { it > 0 }, live = false)
             }
@@ -59,7 +62,7 @@ data class Portfolio(
                 groups = groups,
                 cash = s.cash.sortedByDescending { it.amount },
                 others = s.others.sortedByDescending { it.value },
-                missing = rows.filter { !it.live }.map { it.h.ticker }.distinct(),
+                missing = rows.filter { !it.live && !it.manual }.map { it.h.ticker }.distinct(),
             )
         }
     }

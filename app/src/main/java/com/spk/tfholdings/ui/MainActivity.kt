@@ -118,12 +118,12 @@ class MainActivity : ComponentActivity() {
         if (state.value.refreshing) return
         state.value = state.value.copy(refreshing = true)
         lifecycleScope.launch {
-            val fresh = Prices.fetchAll(snap.holdings.map { it.ticker })
+            val fresh = Prices.fetchAll(snap.holdings.map { it.ticker }.filterNot { Portfolio.isManual(it) })
             if (fresh.isNotEmpty()) {
                 quotes = quotes + fresh
                 withContext(Dispatchers.IO) { store.saveQuotes(quotes) }
             }
-            val msg = if (fresh.isEmpty()) "No prices came back. Check the internet connection and press Refresh." else null
+            val msg = if (fresh.isEmpty() && snap.holdings.any { !Portfolio.isManual(it.ticker) }) "No prices came back. Check the internet connection and press Refresh." else null
             publish(pricesAt = if (fresh.isNotEmpty()) System.currentTimeMillis() else state.value.pricesAt, message = msg, live = fresh.keys)
         }
     }

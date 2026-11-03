@@ -30,10 +30,11 @@ class PortfolioTest {
         assertEquals(15 * 3100.0, mm.value, 1e-6)
         assertNull(mm.dayChange)
         assertEquals(listOf("M&M"), p.missing)
-        // SGB: live price used for value, but no daily change
+        // SGB: manual price from the export (a live quote is ignored), no daily change, not "missing"
         val sgb = p.groups[2].rows.first { it.h.ticker == "SGBTEST" }
-        assertEquals(158000.0, sgb.value, 1e-6)
+        assertEquals(150000.0, sgb.value, 1e-6)
         assertNull(sgb.dayChange)
+        assertTrue(sgb.manual)
         assertEquals(p.groups.sumOf { g -> g.rows.sumOf { it.dayChange ?: 0.0 } }, p.dayChange, 1e-6)
         assertEquals(400000.0, p.cashTotal, 1e-6)
         assertEquals(p.holdingsValue + 400000.0 + 2100000.0, p.netWorth, 1e-6)
