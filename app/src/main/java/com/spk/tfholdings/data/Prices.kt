@@ -49,17 +49,24 @@ object Prices {
         val meta = res.getJSONObject("meta")
         val price = meta.optDouble("regularMarketPrice", Double.NaN)
         var prev: Double? = null
+        var gap = false
         val ts = res.optJSONArray("timestamp")
         val closes = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0)?.optJSONArray("close")
         if (ts != null && closes != null) {
             for (i in 0 until minOf(ts.length(), closes.length())) {
-                if (closes.isNull(i)) continue
                 val day = Instant.ofEpochSecond(ts.getLong(i)).atZone(IST).toLocalDate()
-                val c = closes.getDouble(i)
-                if (day.isBefore(today) && c > 0) prev = c
+                if (!day.isBefore(today)) continue
+                val c = if (closes.isNull(i)) Double.NaN else closes.getDouble(i)
+                if (c.isNaN() || c <= 0) {
+                    gap = true          // Yahoo has an empty bar for a session: what comes before it is too old
+                } else {
+                    prev = c
+                    gap = false
+                }
             }
-        }
-        if (prev == null) {
+            // An empty latest session means the true previous close is unknown: show no "today" rather than a wrong one.
+            if (gap) prev = null
+        } else {
             val p = meta.optDouble("previousClose", meta.optDouble("chartPreviousClose", Double.NaN))
             prev = p.takeIf { !it.isNaN() && it > 0 }
         }

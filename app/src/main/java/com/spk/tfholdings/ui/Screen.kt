@@ -206,6 +206,13 @@ private fun Status(st: UiState, p: Portfolio) {
     val prices = st.pricesAt?.let { SimpleDateFormat("d MMM, HH:mm", Locale.ENGLISH).format(Date(it)) } ?: "not yet"
     Column {
         Text("Prices $prices · holdings exported ${Fmt.when_(snap.generatedAt)}", color = Muted, fontSize = 12.sp)
+        if (p.noToday.isNotEmpty() && st.pricesAt != null) {
+            Text(
+                "Today leaves out ${p.noToday.joinToString(", ")}: Yahoo has no reliable previous close. " +
+                    "Export from the laptop today for exact figures.",
+                color = Warn, fontSize = 12.sp,
+            )
+        }
         if (p.missing.isNotEmpty() && st.pricesAt != null) {
             Text(
                 "No live price for ${p.missing.joinToString(", ")}: using the export price.",

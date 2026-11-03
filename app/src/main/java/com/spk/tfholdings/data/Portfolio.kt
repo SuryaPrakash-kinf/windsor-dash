@@ -1,5 +1,8 @@
 package com.spk.tfholdings.data
 
+import java.time.LocalDate
+import java.time.ZoneId
+
 /** A holding valued at its live price (or, when no live price came back, the price in the export). */
 data class Row(val h: Holding, val price: Double, val prev: Double?, val live: Boolean) {
     /** SGBs are priced by hand in TechnoFunda: the phone uses that price and shows no daily change. */
@@ -25,6 +28,7 @@ data class Portfolio(
     val cash: List<CashLine>,
     val others: List<OtherAsset>,
     val missing: List<String>,
+    val noToday: List<String> = emptyList(),
 ) {
     val holdingsValue: Double get() = groups.sumOf { it.value }
     val invested: Double get() = groups.sumOf { it.invested }
@@ -49,10 +53,16 @@ data class Portfolio(
             else -> bucket
         }
 
-        fun build(s: Snapshot, quotes: Map<String, Quote>): Portfolio {
+        /**
+         * Previous close: when the holdings were exported today, the laptop's previous close (it is exact, and keeps
+         * both apps' "today" the same); otherwise the phone's own reading of Yahoo's daily bars.
+         */
+        fun build(s: Snapshot, quotes: Map<String, Quote>, today: LocalDate = LocalDate.now(ZoneId.of("Asia/Kolkata"))): Portfolio {
+            val exportedToday = runCatching { LocalDate.parse(s.generatedAt.take(10)) == today }.getOrDefault(false)
             val rows = s.holdings.map { h ->
                 val q = if (isManual(h.ticker)) null else quotes[h.ticker]
-                if (q != null) Row(h, q.price, q.prev, live = true)
+                val prev = if (exportedToday && h.prevClose > 0) h.prevClose else q?.prev
+                if (q != null) Row(h, q.price, prev, live = true)
                 else Row(h, if (h.lastPrice > 0) h.lastPrice else h.avgCost, h.prevClose.takeIf { it > 0 }, live = false)
             }
             val groups = rows.groupBy { it.h.bucket.ifBlank { "Other" } }
@@ -63,6 +73,7 @@ data class Portfolio(
                 cash = s.cash.sortedByDescending { it.amount },
                 others = s.others.sortedByDescending { it.value },
                 missing = rows.filter { !it.live && !it.manual }.map { it.h.ticker }.distinct(),
+                noToday = rows.filter { it.live && !it.manual && it.dayChange == null }.map { it.h.ticker }.distinct(),
             )
         }
     }

@@ -20,7 +20,7 @@ class PortfolioTest {
         assertEquals(7, s.holdings.size)
         assertEquals("2027-01-08", s.others[1].maturityDate)
         assertNull(s.others[0].maturityDate)
-        val p = Portfolio.build(s, Samples.quotes)
+        val p = Portfolio.build(s, Samples.quotes, java.time.LocalDate.of(2026, 11, 4))
         assertEquals(listOf("Core", "Satellite", "Gold & funds"), p.groups.map { it.name })
         val rel = p.groups[0].rows.first { it.h.ticker == "RELIANCE" }
         assertEquals(40 * 1312.4, rel.value, 1e-6)
@@ -57,6 +57,24 @@ class PortfolioTest {
         val pre = """{"chart":{"result":[{"meta":{"regularMarketPrice":1029.65},
             "timestamp":[1793331000,1793590200],"indicators":{"quote":[{"close":[996.0,1029.65]}]}}]}}"""
         assertEquals(1029.65, Prices.parseYahoo(pre, 0L, java.time.LocalDate.of(2026, 11, 3))!!.prev!!, 1e-9)
+    }
+
+    @Test fun emptyYahooBarMeansNoPreviousClose() {
+        // Real Yahoo reply for ACE.NS on 3 Nov 2026: the 2 Nov bar is empty, so 30 Oct (994.70) must not be used.
+        val body = """{"chart":{"result":[{"meta":{"regularMarketPrice":1063.2,"chartPreviousClose":1022.8},
+            "timestamp":[1793159100,1793245500,1793331900,1793591100,1793677500],
+            "indicators":{"quote":[{"close":[1022.8,1027.0,994.7,null,1063.2]}]}}]}}"""
+        val q = Prices.parseYahoo(body, 0L, java.time.LocalDate.of(2026, 11, 3))!!
+        assertEquals(1063.2, q.price, 1e-9)
+        assertNull(q.prev)
+    }
+
+    @Test fun exportedTodayUsesTheLaptopsPreviousClose() {
+        val s = SnapshotParser.parse(Samples.JSON)   // exported 2026-11-03, RELIANCE prev_close 1290
+        val same = Portfolio.build(s, Samples.quotes, java.time.LocalDate.of(2026, 11, 3))
+        assertEquals(40 * (1312.4 - 1290.0), same.groups[0].rows.first { it.h.ticker == "RELIANCE" }.dayChange!!, 1e-6)
+        val later = Portfolio.build(s, Samples.quotes, java.time.LocalDate.of(2026, 11, 4))
+        assertEquals(40 * (1312.4 - 1300.0), later.groups[0].rows.first { it.h.ticker == "RELIANCE" }.dayChange!!, 1e-6)
     }
 
     @Test fun yahooAndAmfiParsing() {
