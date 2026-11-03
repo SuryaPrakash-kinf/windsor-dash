@@ -45,6 +45,20 @@ class PortfolioTest {
         assertTrue(e is IllegalArgumentException)
     }
 
+    @Test fun previousCloseComesFromTheBars() {
+        // 30 Oct close 996, 2 Nov close 1029.65, 3 Nov (today, live) 1066.10; chartPreviousClose is the older 996
+        val body = """{"chart":{"result":[{"meta":{"regularMarketPrice":1066.1,"chartPreviousClose":996.0},
+            "timestamp":[1793331000,1793590200,1793676600],
+            "indicators":{"quote":[{"close":[996.0,1029.65,1066.1]}]}}]}}"""
+        val q = Prices.parseYahoo(body, 0L, java.time.LocalDate.of(2026, 11, 3))!!
+        assertEquals(1066.1, q.price, 1e-9)
+        assertEquals(1029.65, q.prev!!, 1e-9)
+        // Before today's first bar exists, the last bar is yesterday's close
+        val pre = """{"chart":{"result":[{"meta":{"regularMarketPrice":1029.65},
+            "timestamp":[1793331000,1793590200],"indicators":{"quote":[{"close":[996.0,1029.65]}]}}]}}"""
+        assertEquals(1029.65, Prices.parseYahoo(pre, 0L, java.time.LocalDate.of(2026, 11, 3))!!.prev!!, 1e-9)
+    }
+
     @Test fun yahooAndAmfiParsing() {
         val y = """{"chart":{"result":[{"meta":{"regularMarketPrice":1312.4,"chartPreviousClose":1300.0}}]}}"""
         assertEquals(1312.4, Prices.parseYahoo(y)!!.price, 1e-9)

@@ -11,6 +11,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 /** A price and the previous close it is compared with for "today". */
 data class Quote(val price: Double, val prev: Double?, val at: Long)
@@ -22,6 +25,7 @@ data class Quote(val price: Double, val prev: Double?, val at: Long)
  *  - everything else -> Yahoo NSE first, then BSE
  */
 object Prices {
+    private val IST: ZoneId = ZoneId.of("Asia/Kolkata")
     private const val UA = "Mozilla/5.0 (Linux; Android 14; Mobile) TFHoldings/1.0"
 
     fun isFund(ticker: String) = ticker.isNotEmpty() && ticker.all { it.isDigit() }
@@ -31,12 +35,35 @@ object Prices {
         return if (s.startsWith("SGB")) listOf("$s.BO", "$s.NS") else listOf("$s.NS", "$s.BO")
     }
 
-    fun parseYahoo(body: String, now: Long = System.currentTimeMillis()): Quote? = try {
-        val meta = JSONObject(body).getJSONObject("chart").getJSONArray("result").getJSONObject(0).getJSONObject("meta")
+    /**
+     * Price = regularMarketPrice. Previous close = the close of the last daily bar before today (IST), read from the
+     * bars themselves, the same way the laptop app does it. Yahoo's chartPreviousClose is only a fallback: it is the
+     * close before the first bar of the range, which can be two sessions back.
+     */
+    fun parseYahoo(
+        body: String,
+        now: Long = System.currentTimeMillis(),
+        today: LocalDate = LocalDate.now(IST),
+    ): Quote? = try {
+        val res = JSONObject(body).getJSONObject("chart").getJSONArray("result").getJSONObject(0)
+        val meta = res.getJSONObject("meta")
         val price = meta.optDouble("regularMarketPrice", Double.NaN)
-        var prev = meta.optDouble("chartPreviousClose", Double.NaN)
-        if (prev.isNaN() || prev <= 0) prev = meta.optDouble("previousClose", Double.NaN)
-        if (price.isNaN() || price <= 0) null else Quote(price, prev.takeIf { !it.isNaN() && it > 0 }, now)
+        var prev: Double? = null
+        val ts = res.optJSONArray("timestamp")
+        val closes = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0)?.optJSONArray("close")
+        if (ts != null && closes != null) {
+            for (i in 0 until minOf(ts.length(), closes.length())) {
+                if (closes.isNull(i)) continue
+                val day = Instant.ofEpochSecond(ts.getLong(i)).atZone(IST).toLocalDate()
+                val c = closes.getDouble(i)
+                if (day.isBefore(today) && c > 0) prev = c
+            }
+        }
+        if (prev == null) {
+            val p = meta.optDouble("previousClose", meta.optDouble("chartPreviousClose", Double.NaN))
+            prev = p.takeIf { !it.isNaN() && it > 0 }
+        }
+        if (price.isNaN() || price <= 0) null else Quote(price, prev, now)
     } catch (e: Exception) {
         null
     }
@@ -72,7 +99,7 @@ object Prices {
         for (sym in yahooSymbols(ticker)) {
             val enc = URLEncoder.encode(sym, "UTF-8")
             for (host in listOf("query1", "query2")) {
-                val body = get("https://$host.finance.yahoo.com/v8/finance/chart/$enc?range=1d&interval=1d") ?: continue
+                val body = get("https://$host.finance.yahoo.com/v8/finance/chart/$enc?range=5d&interval=1d") ?: continue
                 parseYahoo(body)?.let { return it }
             }
         }

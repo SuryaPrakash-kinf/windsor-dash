@@ -286,6 +286,7 @@ private fun HoldingRow(r: HRow) {
             Detail("Average cost", Fmt.price(r.h.avgCost))
             Detail("Invested", Fmt.inr(r.h.invested))
             Detail("Unrealised P&L", Fmt.inr(r.pnl, sign = true))
+            r.prev?.let { if (!r.manual) Detail("Previous close", Fmt.price(it)) }
             r.dayChange?.let { Detail("Today", Fmt.inr(it, sign = true)) }
             if (r.manual) Detail("Price", "your manual price in TechnoFunda")
             if (r.h.tranche.isNotBlank()) Detail("Tranche", r.h.tranche)
