@@ -17,6 +17,8 @@ object Samples {
    "qty": 15, "avg_cost": 2900.0, "invested": 43500.0, "last_price": 3100.0, "prev_close": 3120.0, "tranche": "Tranche 1", "stop": 2650.0},
   {"ticker": "GOLDBEES", "name": "Gold ETF", "bucket": "Gold/MF", "broker": "Dhan", "sector": "",
    "qty": 500, "avg_cost": 70.0, "invested": 35000.0, "last_price": 78.0, "prev_close": 77.5, "tranche": "", "stop": 0},
+  {"ticker": "SGBTEST", "name": "Sovereign Gold Bond", "bucket": "Gold/MF", "broker": "Zerodha", "sector": "",
+   "qty": 10, "avg_cost": 5000.0, "invested": 50000.0, "last_price": 15000.0, "prev_close": 0, "tranche": "", "stop": 0},
   {"ticker": "120503", "name": "An Index Fund - Direct Growth", "bucket": "Gold/MF", "broker": "Fyers", "sector": "",
    "qty": 1234.567, "avg_cost": 80.0, "invested": 98765.36, "last_price": 92.5, "prev_close": 92.1, "tranche": "", "stop": 0}
  ],
@@ -33,5 +35,6 @@ object Samples {
         "BAJAJ-AUTO" to Quote(8890.0, 8800.0, 0L),
         "GOLDBEES" to Quote(78.6, 78.0, 0L),
         "120503" to Quote(92.8, 92.5, 0L),
+        "SGBTEST" to Quote(15800.0, 15000.0, 0L),
     )
 }

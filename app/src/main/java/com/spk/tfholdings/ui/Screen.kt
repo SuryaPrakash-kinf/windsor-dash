@@ -287,6 +287,7 @@ private fun HoldingRow(r: HRow) {
             Detail("Invested", Fmt.inr(r.h.invested))
             Detail("Unrealised P&L", Fmt.inr(r.pnl, sign = true))
             r.dayChange?.let { Detail("Today", Fmt.inr(it, sign = true)) }
+            if (r.illiquid) Detail("Today", "not counted (SGBs trade rarely)")
             if (r.h.tranche.isNotBlank()) Detail("Tranche", r.h.tranche)
             if (r.h.stop > 0) Detail("Stop (GTT)", Fmt.price(r.h.stop))
             if (r.h.sector.isNotBlank()) Detail("Sector", r.h.sector)

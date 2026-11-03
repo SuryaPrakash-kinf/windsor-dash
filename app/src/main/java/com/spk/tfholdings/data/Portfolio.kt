@@ -2,9 +2,12 @@ package com.spk.tfholdings.data
 
 /** A holding valued at its live price (or, when no live price came back, the price in the export). */
 data class Row(val h: Holding, val price: Double, val prev: Double?, val live: Boolean) {
+    /** SGBs trade rarely: their "previous close" can be days or weeks old, so a daily change would be fake. */
+    val illiquid: Boolean get() = h.ticker.startsWith("SGB")
+    private val hasDay: Boolean get() = live && !illiquid && prev != null && prev > 0
     val value: Double get() = h.qty * price
-    val dayChange: Double? get() = if (live && prev != null && prev > 0) h.qty * (price - prev) else null
-    val dayPct: Double? get() = if (live && prev != null && prev > 0) (price / prev - 1) * 100 else null
+    val dayChange: Double? get() = if (hasDay) h.qty * (price - prev!!) else null
+    val dayPct: Double? get() = if (hasDay) (price / prev!! - 1) * 100 else null
     val pnl: Double get() = value - h.invested
     val pnlPct: Double? get() = if (h.invested > 0) pnl / h.invested * 100 else null
 }

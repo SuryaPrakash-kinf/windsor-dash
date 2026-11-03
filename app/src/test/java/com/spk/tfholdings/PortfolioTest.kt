@@ -17,7 +17,7 @@ import org.robolectric.annotation.Config
 class PortfolioTest {
     @Test fun parsesExportAndValuesLive() {
         val s = SnapshotParser.parse(Samples.JSON)
-        assertEquals(6, s.holdings.size)
+        assertEquals(7, s.holdings.size)
         assertEquals("2027-01-08", s.others[1].maturityDate)
         assertNull(s.others[0].maturityDate)
         val p = Portfolio.build(s, Samples.quotes)
@@ -30,6 +30,11 @@ class PortfolioTest {
         assertEquals(15 * 3100.0, mm.value, 1e-6)
         assertNull(mm.dayChange)
         assertEquals(listOf("M&M"), p.missing)
+        // SGB: live price used for value, but no daily change
+        val sgb = p.groups[2].rows.first { it.h.ticker == "SGBTEST" }
+        assertEquals(158000.0, sgb.value, 1e-6)
+        assertNull(sgb.dayChange)
+        assertEquals(p.groups.sumOf { g -> g.rows.sumOf { it.dayChange ?: 0.0 } }, p.dayChange, 1e-6)
         assertEquals(400000.0, p.cashTotal, 1e-6)
         assertEquals(p.holdingsValue + 400000.0 + 2100000.0, p.netWorth, 1e-6)
     }
