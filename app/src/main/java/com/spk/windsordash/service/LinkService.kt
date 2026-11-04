@@ -59,6 +59,7 @@ class LinkService : Service() {
         if (intent?.action == ACTION_STOP) {
             stopLink()
             Dash.setStatus(LinkStatus.IDLE, "Disconnected")
+            com.spk.windsordash.data.Alerts.switchOffDongle()
             stopSelf()
             return START_NOT_STICKY
         }
