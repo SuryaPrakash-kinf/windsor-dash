@@ -64,6 +64,11 @@ object Alerts {
         "Probably locked or asleep. Charging continues; the totals are filled in from the battery when you reconnect."
     )
 
+    fun switchOffDongle() = post(
+        106, "Switch off the OBD dongle",
+        "A powered dongle left plugged in can keep ACC on and trip the car's battery-discharge alert. Turn it off at its button (or unplug it) now that you're done."
+    )
+
     private fun post(id: Int, title: String, text: String) {
         if (!::ctx.isInitialized || !enabled) return
         if (Build.VERSION.SDK_INT >= 33 &&
