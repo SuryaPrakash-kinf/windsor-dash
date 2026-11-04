@@ -59,6 +59,18 @@ class PortfolioTest {
         assertEquals(1029.65, Prices.parseYahoo(pre, 0L, java.time.LocalDate.of(2026, 11, 3))!!.prev!!, 1e-9)
     }
 
+    @Test fun hourlyBarsGiveLastCloseOfThePreviousDay() {
+        // 2 Nov: 10:15, 14:15, 15:15 bars (last 1029.65); 3 Nov: 09:15 bar (today)
+        val body = """{"chart":{"result":[{"meta":{"regularMarketPrice":1063.2,"chartPreviousClose":994.7},
+            "timestamp":[1793594700,1793609100,1793612700,1793677500],
+            "indicators":{"quote":[{"close":[1010.0,1025.0,1029.65,1063.2]}]}}]}}"""
+        val q = Prices.parseYahoo(body, 0L, java.time.LocalDate.of(2026, 11, 3))!!
+        assertEquals(1029.65, q.prev!!, 1e-9)
+        // the last bar of a day is empty: use that day's last real close
+        val gapLast = body.replace("1029.65,1063.2", "null,1063.2")
+        assertEquals(1025.0, Prices.parseYahoo(gapLast, 0L, java.time.LocalDate.of(2026, 11, 3))!!.prev!!, 1e-9)
+    }
+
     @Test fun emptyYahooBarMeansNoPreviousClose() {
         // Real Yahoo reply for ACE.NS on 3 Nov 2026: the 2 Nov bar is empty, so 30 Oct (994.70) must not be used.
         val body = """{"chart":{"result":[{"meta":{"regularMarketPrice":1063.2,"chartPreviousClose":1022.8},
@@ -78,7 +90,7 @@ class PortfolioTest {
     }
 
     @Test fun yahooAndAmfiParsing() {
-        val y = """{"chart":{"result":[{"meta":{"regularMarketPrice":1312.4,"chartPreviousClose":1300.0}}]}}"""
+        val y = """{"chart":{"result":[{"meta":{"regularMarketPrice":1312.4,"previousClose":1300.0}}]}}"""
         assertEquals(1312.4, Prices.parseYahoo(y)!!.price, 1e-9)
         assertEquals(1300.0, Prices.parseYahoo(y)!!.prev!!, 1e-9)
         val m = """{"data":[{"date":"03-11-2026","nav":"92.80"},{"date":"31-10-2026","nav":"92.50"}]}"""

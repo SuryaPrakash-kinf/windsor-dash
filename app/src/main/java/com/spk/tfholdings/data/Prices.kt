@@ -40,9 +40,10 @@ object Prices {
     }
 
     /**
-     * Price = regularMarketPrice. Previous close = the close of the last daily bar before today (IST), read from the
-     * bars themselves, the same way the laptop app does it. Yahoo's chartPreviousClose is only a fallback: it is the
-     * close before the first bar of the range, which can be two sessions back.
+     * Price = regularMarketPrice. Previous close = the last close of the most recent day before today (IST), taken
+     * from hourly bars grouped by day: the same method the laptop's price library (yfinance) uses. Yahoo's daily
+     * bars for NSE sometimes have empty sessions, and chartPreviousClose can be two sessions back, so neither is used.
+     * If the latest earlier day has only empty bars, the previous close is unknown (null) rather than wrong.
      */
     fun parseYahoo(
         body: String,
@@ -52,26 +53,20 @@ object Prices {
         val res = JSONObject(body).getJSONObject("chart").getJSONArray("result").getJSONObject(0)
         val meta = res.getJSONObject("meta")
         val price = meta.optDouble("regularMarketPrice", Double.NaN)
-        var prev: Double? = null
-        var gap = false
         val ts = res.optJSONArray("timestamp")
         val closes = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0)?.optJSONArray("close")
+        var prev: Double? = null
         if (ts != null && closes != null) {
+            val lastClose = sortedMapOf<LocalDate, Double?>()     // day -> last non-empty close (null: all empty)
             for (i in 0 until minOf(ts.length(), closes.length())) {
                 val day = Instant.ofEpochSecond(ts.getLong(i)).atZone(IST).toLocalDate()
                 if (!day.isBefore(today)) continue
                 val c = if (closes.isNull(i)) Double.NaN else closes.getDouble(i)
-                if (c.isNaN() || c <= 0) {
-                    gap = true          // Yahoo has an empty bar for a session: what comes before it is too old
-                } else {
-                    prev = c
-                    gap = false
-                }
+                if (!c.isNaN() && c > 0) lastClose[day] = c else if (!lastClose.containsKey(day)) lastClose[day] = null
             }
-            // An empty latest session means the true previous close is unknown: show no "today" rather than a wrong one.
-            if (gap) prev = null
+            prev = lastClose.entries.lastOrNull()?.value
         } else {
-            val p = meta.optDouble("previousClose", meta.optDouble("chartPreviousClose", Double.NaN))
+            val p = meta.optDouble("previousClose", Double.NaN)
             prev = p.takeIf { !it.isNaN() && it > 0 }
         }
         if (price.isNaN() || price <= 0) null else Quote(price, prev, now)
@@ -110,7 +105,7 @@ object Prices {
         for (sym in yahooSymbols(ticker)) {
             val enc = URLEncoder.encode(sym, "UTF-8")
             for (host in listOf("query1", "query2")) {
-                val body = get("https://$host.finance.yahoo.com/v8/finance/chart/$enc?range=5d&interval=1d") ?: continue
+                val body = get("https://$host.finance.yahoo.com/v8/finance/chart/$enc?range=5d&interval=1h") ?: continue
                 parseYahoo(body)?.let { return it }
             }
         }
