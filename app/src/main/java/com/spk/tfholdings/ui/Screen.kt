@@ -6,6 +6,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -79,8 +82,9 @@ data class UiState(
 @Composable
 fun Screen(st: UiState, onRefresh: () -> Unit, onImport: () -> Unit) {
     val p = st.portfolio
+    // Keep clear of the status bar (clock, icons) and the navigation buttons: Android 15 draws apps edge to edge.
     LazyColumn(
-        modifier = Modifier.fillMaxSize().background(Bg),
+        modifier = Modifier.fillMaxSize().background(Bg).windowInsetsPadding(WindowInsets.safeDrawing),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -189,7 +193,7 @@ private fun Label(text: String) =
 @Composable
 private fun Hero(p: Portfolio) = CardBox {
     Label("Stocks & funds · live")
-    Text(Fmt.inr(p.holdingsValue), color = Ink, fontSize = 34.sp, fontWeight = FontWeight.Light, style = Num)
+    Text(Fmt.inr(p.holdingsValue), color = Ink, fontSize = 30.sp, fontWeight = FontWeight.Light, style = Num)
     Spacer(Modifier.height(6.dp))
     Row {
         Column(Modifier.weight(1f)) {
