@@ -26,7 +26,22 @@ object Samples {
  "other_assets": [
   {"name": "Provident fund", "asset_class": "Fixed Income", "value": 1500000.0, "maturity_date": null, "kind": "PF / EPF"},
   {"name": "Child plan ULIP", "asset_class": "Fixed Income", "value": 600000.0, "maturity_date": "2027-01-08", "kind": "ULIP"}
- ]}
+ ],
+ "plan": {"generated_at": "2026-11-03T18:30:00", "summary": "3 action(s), 1 input(s) needed",
+  "regime": {"state": "BEAR", "detail": "Nifty 23,053 vs 30-week SMA 23,743 (falling)", "block_new_satellite": true},
+  "sections": [
+   {"key": "sell", "title": "Sell / exit", "items": [{"kind": "sell", "ticker": "TCS", "title": "Sell 20 TCS",
+     "detail": "close below 21M EMA. Dhruva WEAK: both say exit.", "qty": 20, "price": 3385.0, "amount": 67700.0,
+     "broker": "Dhan", "confirm": "", "urgent": false}]},
+   {"key": "buy", "title": "Buy (app and Technofunda agree)", "items": [{"kind": "buy", "ticker": "INFY", "title": "Buy 60 INFY",
+     "detail": "close above rising 21M EMA. Dhruva STRONG.", "qty": 60, "price": 1500.0, "amount": 90000.0,
+     "broker": "Zerodha", "confirm": "monthly chart: 45° and Shaktimaan", "urgent": false}]},
+   {"key": "stop", "title": "Stops to set or move", "items": [{"kind": "stop", "ticker": "M&M", "title": "M&M (Zerodha): stop not confirmed",
+     "detail": "Confirm the live broker GTT at 2,650.", "qty": null, "price": null, "amount": null, "broker": "Zerodha", "confirm": "", "urgent": false}]},
+   {"key": "input", "title": "Inputs needed", "items": [{"kind": "input", "ticker": "", "title": "Upload this week's Price Action CSV",
+     "detail": "Weekly Satellite selection.", "qty": null, "price": null, "amount": null, "broker": "", "confirm": "", "urgent": false}]},
+   {"key": "check", "title": "Your call (one side only)", "items": []}
+  ]}}
 """
 
     val quotes = mapOf(

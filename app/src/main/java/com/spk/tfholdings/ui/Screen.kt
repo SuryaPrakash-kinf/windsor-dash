@@ -37,6 +37,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.spk.tfholdings.data.Fmt
 import com.spk.tfholdings.data.Group
+import com.spk.tfholdings.data.Plan
+import com.spk.tfholdings.data.PlanItem
+import com.spk.tfholdings.data.PlanSection
 import com.spk.tfholdings.data.Portfolio
 import com.spk.tfholdings.data.Quote
 import com.spk.tfholdings.data.Row as HRow
@@ -95,6 +98,7 @@ fun Screen(st: UiState, onRefresh: () -> Unit, onImport: () -> Unit) {
             item { Empty(onImport) }
             return@LazyColumn
         }
+        st.snapshot.plan?.let { plan -> item { PlanCard(plan) } }
         item { Hero(p) }
         item { NetWorth(p) }
         item { Status(st, p) }
@@ -155,6 +159,57 @@ private fun Indices(lines: List<IndexLine>) = Row(Modifier.fillMaxWidth(), horiz
             )
         }
     }
+}
+
+@Composable
+private fun PlanCard(plan: Plan) = CardBox {
+    var open by rememberSaveable { mutableStateOf(true) }
+    Row(Modifier.fillMaxWidth().clickable { open = !open }, verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Label("Action plan · " + Fmt.when_(plan.generatedAt))
+            Text(plan.summary, color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Text(if (open) "Hide" else "Show", color = Accent, fontSize = 13.sp)
+    }
+    val age = runCatching {
+        java.time.Duration.between(java.time.LocalDateTime.parse(plan.generatedAt.take(19)), java.time.LocalDateTime.now()).toHours()
+    }.getOrNull()
+    if (age != null && age > 48) {
+        Text("Built ${age / 24} days ago: export again from the laptop for today's plan.", color = Warn, fontSize = 12.sp)
+    }
+    if (!open) return@CardBox
+    plan.sections.forEach { sec -> PlanSectionView(sec) }
+    Spacer(Modifier.height(6.dp))
+    Text("Check each line and place orders yourself.", color = Muted, fontSize = 11.sp)
+}
+
+@Composable
+private fun PlanSectionView(sec: PlanSection) {
+    val important = sec.key in setOf("sell", "buy", "add", "stop")
+    var open by rememberSaveable(sec.key) { mutableStateOf(important) }
+    Spacer(Modifier.height(10.dp))
+    Row(Modifier.fillMaxWidth().clickable { open = !open }, verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "${sec.title} (${sec.items.size})",
+            color = when (sec.key) { "sell" -> Down; "buy", "add" -> Up; "stop", "input" -> Warn; else -> Ink },
+            fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f),
+        )
+        Text(if (open) "−" else "+", color = Muted, fontSize = 16.sp)
+    }
+    if (open) sec.items.forEach { PlanItemRow(it) }
+}
+
+@Composable
+private fun PlanItemRow(i: PlanItem) = Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text(i.title, color = if (i.urgent) Down else Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f))
+        i.amount?.let { Text(Fmt.inr(it), color = Ink, fontSize = 13.sp, style = Num) }
+    }
+    val sub = listOfNotNull(i.broker.ifBlank { null }?.takeIf { it != "-" }, i.price?.let { "@ " + Fmt.price(it) })
+    if (sub.isNotEmpty()) Text(sub.joinToString(" · "), color = Muted, fontSize = 12.sp, style = Num)
+    if (i.detail.isNotBlank()) Text(i.detail, color = Muted, fontSize = 12.sp, lineHeight = 16.sp)
+    if (i.confirm.isNotBlank()) Text("Confirm: " + i.confirm, color = Warn, fontSize = 12.sp, lineHeight = 16.sp)
 }
 
 @Composable

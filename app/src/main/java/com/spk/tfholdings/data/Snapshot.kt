@@ -29,11 +29,35 @@ data class OtherAsset(
     val kind: String,
 )
 
+data class PlanItem(
+    val kind: String,
+    val ticker: String,
+    val title: String,
+    val detail: String,
+    val amount: Double?,
+    val price: Double?,
+    val broker: String,
+    val confirm: String,
+    val urgent: Boolean,
+)
+
+data class PlanSection(val key: String, val title: String, val items: List<PlanItem>)
+
+/** Action plan built by the laptop agent (plan_agent.py). Information only: the phone never places orders. */
+data class Plan(
+    val generatedAt: String,
+    val summary: String,
+    val regime: String,
+    val regimeDetail: String,
+    val sections: List<PlanSection>,
+)
+
 data class Snapshot(
     val generatedAt: String,
     val holdings: List<Holding>,
     val cash: List<CashLine>,
     val others: List<OtherAsset>,
+    val plan: Plan? = null,
 )
 
 object SnapshotParser {
@@ -76,6 +100,38 @@ object SnapshotParser {
                     kind = it.optString("kind", ""),
                 )
             },
+            plan = o.optJSONObject("plan")?.let { parsePlan(it) },
+        )
+    }
+
+    private fun num(o: JSONObject, k: String): Double? = if (o.isNull(k)) null else o.optDouble(k, Double.NaN).takeIf { !it.isNaN() }
+
+    private fun parsePlan(p: JSONObject): Plan {
+        val reg = p.optJSONObject("regime")
+        return Plan(
+            generatedAt = p.optString("generated_at", ""),
+            summary = p.optString("summary", ""),
+            regime = reg?.optString("state", "") ?: "",
+            regimeDetail = reg?.optString("detail", "") ?: "",
+            sections = objects(p.optJSONArray("sections")).map { s ->
+                PlanSection(
+                    key = s.optString("key"),
+                    title = s.optString("title"),
+                    items = objects(s.optJSONArray("items")).map { i ->
+                        PlanItem(
+                            kind = i.optString("kind"),
+                            ticker = i.optString("ticker"),
+                            title = i.optString("title"),
+                            detail = i.optString("detail"),
+                            amount = num(i, "amount"),
+                            price = num(i, "price"),
+                            broker = i.optString("broker"),
+                            confirm = i.optString("confirm"),
+                            urgent = i.optBoolean("urgent", false),
+                        )
+                    },
+                )
+            }.filter { it.items.isNotEmpty() },
         )
     }
 

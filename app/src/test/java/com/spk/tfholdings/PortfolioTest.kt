@@ -40,6 +40,15 @@ class PortfolioTest {
         assertEquals(p.holdingsValue + 400000.0 + 2100000.0, p.netWorth, 1e-6)
     }
 
+    @Test fun parsesTheActionPlan() {
+        val plan = SnapshotParser.parse(Samples.JSON).plan!!
+        assertEquals("BEAR", plan.regime)
+        assertEquals(listOf("sell", "buy", "stop", "input"), plan.sections.map { it.key })   // empty sections dropped
+        assertEquals(90000.0, plan.sections[1].items[0].amount!!, 1e-9)
+        assertNull(plan.sections[2].items[0].amount)
+        assertNull(SnapshotParser.parse("{\"holdings\": []}").plan)
+    }
+
     @Test fun rejectsOtherFiles() {
         val e = runCatching { SnapshotParser.parse("{\"hello\": 1}") }.exceptionOrNull()
         assertTrue(e is IllegalArgumentException)
