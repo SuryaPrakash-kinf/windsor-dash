@@ -69,6 +69,11 @@ object Alerts {
         "A powered dongle left plugged in can keep ACC on and trip the car's battery-discharge alert. Turn it off at its button (or unplug it) now that you're done."
     )
 
+    fun aboveRunningAvg(current: Double, planned: Double) = post(
+        107, "Running above your charging plan",
+        "You're averaging ~%.0f Wh/km over the last 10 min vs the %.0f Wh/km you planned for. You may want to add a stop or charge more.".format(current, planned)
+    )
+
     private fun post(id: Int, title: String, text: String) {
         if (!::ctx.isInitialized || !enabled) return
         if (Build.VERSION.SDK_INT >= 33 &&

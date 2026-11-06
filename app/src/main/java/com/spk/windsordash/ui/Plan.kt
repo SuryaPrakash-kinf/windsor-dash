@@ -108,6 +108,21 @@ fun PlanScreen(st: DashState, onBack: () -> Unit, initialKm: String = "", initia
                 }
                 Switch(checked = atCharger, onCheckedChange = { atCharger = it })
             }
+            Spacer(Modifier.height(10.dp))
+            val watching = st.planWatchWhKm != null
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Alert if I run above this", color = Ink, fontSize = 14.sp)
+                    Text(
+                        if (watching) "Watching · ${st.planWatchWhKm!!.roundToInt()} Wh/km"
+                        else "Notify once driving averages over ${(whUsed * 1.1).roundToInt()} Wh/km",
+                        color = Faint, fontSize = 11.sp,
+                    )
+                }
+                Switch(checked = watching, onCheckedChange = {
+                    com.spk.windsordash.data.Dash.setPlanWatch(if (it) whUsed else null)
+                })
+            }
         }
 
         val d = km.toDoubleOrNull()
