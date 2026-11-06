@@ -90,12 +90,15 @@ class PortfolioTest {
         assertNull(q.prev)
     }
 
-    @Test fun exportedTodayUsesTheLaptopsPreviousClose() {
-        val s = SnapshotParser.parse(Samples.JSON)   // exported 2026-11-03, RELIANCE prev_close 1290
+    @Test fun phonesOwnPreviousCloseWinsTheExportIsAFallback() {
+        val s = SnapshotParser.parse(Samples.JSON)   // exported 2026-11-03, RELIANCE prev_close 1290 in the export
         val same = Portfolio.build(s, Samples.quotes, java.time.LocalDate.of(2026, 11, 3))
-        assertEquals(40 * (1312.4 - 1290.0), same.groups[0].rows.first { it.h.ticker == "RELIANCE" }.dayChange!!, 1e-6)
-        val later = Portfolio.build(s, Samples.quotes, java.time.LocalDate.of(2026, 11, 4))
-        assertEquals(40 * (1312.4 - 1300.0), later.groups[0].rows.first { it.h.ticker == "RELIANCE" }.dayChange!!, 1e-6)
+        assertEquals(40 * (1312.4 - 1300.0), same.groups[0].rows.first { it.h.ticker == "RELIANCE" }.dayChange!!, 1e-6)
+        // no previous close from Yahoo: the same-day export's is used
+        val noPrev = Samples.quotes + ("RELIANCE" to com.spk.tfholdings.data.Quote(1312.4, null, 0L))
+        val fb = Portfolio.build(s, noPrev, java.time.LocalDate.of(2026, 11, 3))
+        assertEquals(40 * (1312.4 - 1290.0), fb.groups[0].rows.first { it.h.ticker == "RELIANCE" }.dayChange!!, 1e-6)
+        assertNull(Portfolio.build(s, noPrev, java.time.LocalDate.of(2026, 11, 4)).groups[0].rows.first { it.h.ticker == "RELIANCE" }.dayChange)
     }
 
     @Test fun yahooAndAmfiParsing() {

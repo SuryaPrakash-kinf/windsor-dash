@@ -53,15 +53,14 @@ data class Portfolio(
             else -> bucket
         }
 
-        /**
-         * Previous close: when the holdings were exported today, the laptop's previous close (it is exact, and keeps
-         * both apps' "today" the same); otherwise the phone's own reading of Yahoo's daily bars.
-         */
+        /** Previous close: the phone's own (live quote); the export's only as a same-day fallback. */
         fun build(s: Snapshot, quotes: Map<String, Quote>, today: LocalDate = LocalDate.now(ZoneId.of("Asia/Kolkata"))): Portfolio {
             val exportedToday = runCatching { LocalDate.parse(s.generatedAt.take(10)) == today }.getOrDefault(false)
             val rows = s.holdings.map { h ->
                 val q = if (isManual(h.ticker)) null else quotes[h.ticker]
-                val prev = if (exportedToday && h.prevClose > 0) h.prevClose else q?.prev
+                // The phone's own previous close (Yahoo hourly bars / AMFI) matches the laptop's, so the export is only
+                // needed after a trade. The export's figure is used only when Yahoo has none and it was made today.
+                val prev = q?.prev ?: if (exportedToday && h.prevClose > 0) h.prevClose else null
                 if (q != null) Row(h, q.price, prev, live = true)
                 else Row(h, if (h.lastPrice > 0) h.lastPrice else h.avgCost, h.prevClose.takeIf { it > 0 }, live = false)
             }
