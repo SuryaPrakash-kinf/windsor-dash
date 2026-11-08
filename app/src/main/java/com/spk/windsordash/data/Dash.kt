@@ -165,6 +165,8 @@ object Dash {
     private var lastSeenSaved = 0L
     private var targetAlerted = false
     private var planWatchAlerted = false
+    private var usualAlertTripStart = 0L
+    private var usualAlerted = false
     private val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
     private var lastOdo: Int? = null
     private var whSinceOdo = 0.0
@@ -757,6 +759,19 @@ object Dash {
                 if (soc != null && soc >= prev.targetSoc && !targetAlerted) { targetAlerted = true; Alerts.targetReached(soc, prev.targetSoc) }
             } else if (!charging) targetAlerted = false
             if (chargeDiscarded) LocalLog.event("ignored a very short inflow (regen, not a charge)")
+
+            // Battery care: periodic LFP tips (weekly full charge, don't sit low, don't sit full for days).
+            BatteryCare.record(prefs, s.socPct, charging, now)
+            BatteryCare.maybeNotify(prefs, BatteryCare.tip(prefs, s.socPct, now), now)
+
+            // Usual-efficiency watch: once per trip, flag driving running well above your recent-runs average.
+            if (trip.startedAt != usualAlertTripStart) { usualAlertTripStart = trip.startedAt; usualAlerted = false }
+            if (!usualAlerted && recent != null && win != null && win.second >= 3.0 &&
+                now - win.third < 60_000 && win.first > recent.first * 1.25
+            ) {
+                usualAlerted = true
+                Alerts.aboveUsual(win.first, recent.first)
+            }
         }
     }
 

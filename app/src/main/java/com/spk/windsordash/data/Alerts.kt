@@ -74,6 +74,13 @@ object Alerts {
         "You're averaging ~%.0f Wh/km over the last 10 min vs the %.0f Wh/km you planned for. You may want to add a stop or charge more.".format(current, planned)
     )
 
+    fun aboveUsual(current: Double, usual: Double) = post(
+        108, "Using more than usual today",
+        "~%.0f Wh/km over the last 10 min vs your usual %.0f Wh/km. Range left is lower than a typical drive like this.".format(current, usual)
+    )
+
+    fun batteryCareTip(title: String, text: String) = post(109, title, text)
+
     private fun post(id: Int, title: String, text: String) {
         if (!::ctx.isInitialized || !enabled) return
         if (Build.VERSION.SDK_INT >= 33 &&
