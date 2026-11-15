@@ -21,6 +21,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
@@ -28,21 +31,34 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.spk.windsordash.data.ChargeCurve
 import com.spk.windsordash.data.ChargePlanner
+import com.spk.windsordash.data.ChargerPoi
+import com.spk.windsordash.data.Dash
 import com.spk.windsordash.data.DashState
+import com.spk.windsordash.data.GoogleMaps
+import com.spk.windsordash.data.MapsException
 import com.spk.windsordash.data.PlanInput
 import com.spk.windsordash.data.PlanOption
+import com.spk.windsordash.data.QuickLocation
+import com.spk.windsordash.data.RoutePlan
+import com.spk.windsordash.data.RoutePlanOutcome
+import com.spk.windsordash.data.RoutePlanner
+import com.spk.windsordash.obd.WindsorProfile
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /** The Wh/km the planner starts from: this trip once it's long enough, else recent driving, else 135. */
@@ -149,6 +165,180 @@ fun PlanScreen(st: DashState, onBack: () -> Unit, initialKm: String = "", initia
             )
             Text("Stops are placed where SoC would reach your minimum; pick the charger at or before that km.", color = Faint, fontSize = 11.sp)
         }
+
+        Spacer(Modifier.height(4.dp))
+        RoutePlanSection(st, soc, whUsed, reserve.toDoubleOrNull() ?: 10.0, minAt.toDoubleOrNull() ?: 15.0)
+    }
+}
+
+/** Current state of the route fetch + plan, driven by the "Plan route" button. */
+private sealed interface RouteUi {
+    object Idle : RouteUi
+    object Loading : RouteUi
+    data class Error(val message: String) : RouteUi
+    data class Ready(val summary: com.spk.windsordash.data.RouteSummary, val plan: RoutePlan) : RouteUi
+}
+
+/**
+ * Real-route charging plan: geocodes origin/destination, pulls the route + elevation from Google
+ * Directions/Elevation, finds real DC chargers near it via Places, then runs [RoutePlanner] —
+ * the same greedy stop placement as the plain planner above, but following the actual road and
+ * terrain instead of a straight Wh/km line, with real places instead of an abstract km mark.
+ * Needs your own Google Maps Platform API key (Directions, Elevation, Places, Geocoding enabled).
+ */
+@Composable
+private fun RoutePlanSection(st: DashState, soc: Double?, whUsed: Double, reservePct: Double, minAtChargerPct: Double) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var apiKey by remember { mutableStateOf(Dash.mapsApiKey) }
+    var origin by rememberSaveable { mutableStateOf("") }
+    var destination by rememberSaveable { mutableStateOf("") }
+    var ui by remember { mutableStateOf<RouteUi>(RouteUi.Idle) }
+
+    Panel(accent = Teal) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { expanded = !expanded }) {
+            Column(Modifier.weight(1f)) {
+                Text("Plan a real route", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text("Real roads, real chargers — needs your Google Maps key", color = Faint, fontSize = 11.sp)
+            }
+            Text(if (expanded) "▲" else "▼", color = Teal, fontSize = 13.sp)
+        }
+        if (expanded) {
+        Spacer(Modifier.height(10.dp))
+
+        AddressField("Google Maps API key", apiKey, "Directions, Elevation, Places, Geocoding") {
+            apiKey = it; Dash.mapsApiKey = it
+        }
+        if (apiKey.isNotBlank()) {
+            Text("Saved (${apiKey.take(6)}…${apiKey.takeLast(4)})", color = Faint, fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+
+        AddressField("From", origin, "Blank = your phone's current location") { origin = it }
+        Spacer(Modifier.height(8.dp))
+        AddressField("To", destination, "City, address, or place name") { destination = it }
+        Spacer(Modifier.height(10.dp))
+
+        Button(
+            onClick = {
+                val key = apiKey
+                val dest = destination
+                val startSoc = soc
+                ui = RouteUi.Loading
+                scope.launch {
+                    ui = try {
+                        if (key.isBlank()) throw MapsException("Paste your Google Maps API key above first.")
+                        if (dest.isBlank()) throw MapsException("Type where you're going.")
+                        if (startSoc == null) throw MapsException("Connect to the car, or type a SoC above, first.")
+                        val originLatLng = if (origin.isBlank()) {
+                            val loc = QuickLocation.lastKnown(ctx)
+                                ?: throw MapsException("No current location — allow location access, or type a starting address.")
+                            com.spk.windsordash.data.LatLng(loc.latitude, loc.longitude)
+                        } else {
+                            GoogleMaps.geocode(origin, key)
+                        }
+                        val destLatLng = GoogleMaps.geocode(dest, key)
+                        val route = GoogleMaps.directions(originLatLng, destLatLng, key)
+                        val withElev = GoogleMaps.withElevations(route.points, key)
+                        val chargers = GoogleMaps.chargersAlongRoute(withElev, key)
+                        val usableKwh = WindsorProfile.RATED_KWH * ((st.sample.sohPct ?: 100.0) / 100)
+                        val plan = RoutePlanner(usableKwh, whUsed).plan(
+                            points = withElev, startSoc = startSoc, chargers = chargers,
+                            minArrivalAtChargerPct = minAtChargerPct, minArrivalAtDestinationPct = reservePct,
+                            maxChargeTargetPct = 95.0, maxDetourM = 5_000.0,
+                        )
+                        RouteUi.Ready(route.copy(points = withElev), plan)
+                    } catch (e: MapsException) {
+                        RouteUi.Error(e.message ?: "Something went wrong.")
+                    } catch (e: Exception) {
+                        RouteUi.Error("Couldn't plan the route: ${e.message ?: e::class.simpleName}")
+                    }
+                }
+            },
+            enabled = ui !is RouteUi.Loading,
+            colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Bg),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (ui is RouteUi.Loading) "Planning…" else "Plan route") }
+
+        when (val u = ui) {
+            is RouteUi.Idle -> {}
+            is RouteUi.Loading -> {
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(color = Teal, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Fetching route, elevation and nearby chargers…", color = Dim, fontSize = 12.sp)
+                }
+            }
+            is RouteUi.Error -> {
+                Spacer(Modifier.height(10.dp))
+                Text(u.message, color = Amber, fontSize = 13.sp)
+            }
+            is RouteUi.Ready -> {
+                Spacer(Modifier.height(12.dp))
+                RouteResult(u.summary, u.plan)
+            }
+        }
+        }
+    }
+}
+
+@Composable
+private fun RouteResult(summary: com.spk.windsordash.data.RouteSummary, plan: RoutePlan) {
+    val km = summary.distanceM / 1000.0
+    Tiles {
+        Tile("Distance", "${km.roundToInt()}", "km")
+        Tile("Drive", "${summary.durationMin.roundToInt()}", "min")
+        Tile("Charge", "${ChargePlanner.mins(plan.chargeMinutes)}", "min")
+    }
+    if (kotlin.math.abs(plan.terrainPercent) >= 1.0) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (plan.terrainPercent > 0) "The climbs on this route cost about %.0f %% more battery than flat driving at this Wh/km would.".format(plan.terrainPercent)
+            else "This route is net downhill — regen should give back about %.0f %% versus flat driving.".format(-plan.terrainPercent),
+            color = Faint, fontSize = 11.sp,
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+    when (val o = plan.outcome) {
+        is RoutePlanOutcome.Ok -> {
+            if (o.stops.isEmpty()) {
+                Text("No stop needed — you'll arrive with about ${o.arrivalSoc.roundToInt()} %.", color = Green, fontSize = 13.sp)
+            } else {
+                o.stops.forEachIndexed { i, s -> ChargerStopRow(i, s.charger, s.arriveSoc, s.departSoc, s.minutes) }
+                Spacer(Modifier.height(6.dp))
+                Text("Arrive with about ${o.arrivalSoc.roundToInt()} %.", color = Green, fontSize = 13.sp)
+            }
+        }
+        is RoutePlanOutcome.Unreachable -> {
+            o.stops.forEachIndexed { i, s -> ChargerStopRow(i, s.charger, s.arriveSoc, s.departSoc, s.minutes) }
+            Spacer(Modifier.height(6.dp))
+            Text(o.reason, color = Amber, fontSize = 13.sp)
+        }
+    }
+    Text(
+        "Chargers come from Google Places — it doesn't know live power or availability, so charge time uses your own DC curve regardless of which one you pick. Check the charger's actually open before relying on it.",
+        color = Faint, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp),
+    )
+}
+
+@Composable
+private fun ChargerStopRow(i: Int, charger: ChargerPoi, arriveSoc: Double, departSoc: Double, minutes: Double) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp)) {
+        Box(Modifier.size(22.dp).clip(CircleShape).background(Cyan.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+            Text("${i + 1}", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(charger.name, color = Ink, fontSize = 14.sp)
+            Text(
+                (charger.address?.take(40) ?: "near km ${(charger.alongRouteM / 1000).roundToInt()}") +
+                    " · ${arriveSoc.roundToInt()} → ${departSoc.roundToInt()} %",
+                color = Faint, fontSize = 11.sp,
+            )
+        }
+        Text("${ChargePlanner.mins(minutes)} min", color = Dim, fontSize = 13.sp, style = Num)
     }
 }
 
@@ -189,6 +379,19 @@ private fun OptionCard(o: PlanOption, best: Boolean, oneStopCharge: Double? = nu
                 "If you'd stop for a break anyway, this costs nothing extra — and keeps each stop short.", color = Green.copy(alpha = 0.85f), fontSize = 12.sp)
         }
     }
+}
+
+@Composable
+private fun AddressField(label: String, value: String, hint: String = "", onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value, onValueChange = onChange,
+        label = { Text(label, fontSize = 12.sp) }, placeholder = { if (hint.isNotEmpty()) Text(hint, color = Faint, fontSize = 12.sp) },
+        singleLine = true, modifier = Modifier.fillMaxWidth(),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = Teal, unfocusedBorderColor = Line, focusedTextColor = Ink, unfocusedTextColor = Ink,
+            focusedLabelColor = Teal, unfocusedLabelColor = Dim, cursorColor = Teal,
+        ),
+    )
 }
 
 @Composable

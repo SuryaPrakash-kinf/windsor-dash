@@ -446,6 +446,14 @@ object Dash {
         _state.update { it.copy(targetSoc = pct) }
     }
 
+    /**
+     * Your own Google Maps Platform API key (Directions, Elevation, Places, Geocoding enabled),
+     * used only by the route-based charge planner. Stored locally; never sent anywhere but Google.
+     */
+    var mapsApiKey: String
+        get() = prefs.getString("maps_key", "") ?: ""
+        set(v) { prefs.edit().putString("maps_key", v).apply() }
+
     /** Arm (or clear, with null) an alert for running meaningfully above [whKm] from the Plan screen. */
     fun setPlanWatch(whKm: Double?) {
         prefs.edit().putFloat("plan_watch", (whKm ?: -1.0).toFloat()).apply()
