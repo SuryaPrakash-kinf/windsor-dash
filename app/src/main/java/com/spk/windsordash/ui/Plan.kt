@@ -207,18 +207,13 @@ private fun RoutePlanSection(st: DashState, soc: Double?, whUsed: Double, reserv
         if (expanded) {
         Spacer(Modifier.height(10.dp))
 
-        if (apiKey.isBlank()) {
-            AddressField("Google Maps API key", apiKey, "Directions, Elevation, Places, Geocoding") {
-                apiKey = it; Dash.mapsApiKey = it
-            }
-            Spacer(Modifier.height(8.dp))
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Maps key saved (${apiKey.take(6)}…)", color = Faint, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                Text("change", color = Teal, fontSize = 11.sp, modifier = Modifier.clickable { apiKey = ""; Dash.mapsApiKey = "" })
-            }
-            Spacer(Modifier.height(8.dp))
+        AddressField("Google Maps API key", apiKey, "Directions, Elevation, Places, Geocoding") {
+            apiKey = it; Dash.mapsApiKey = it
         }
+        if (apiKey.isNotBlank()) {
+            Text("Saved (${apiKey.take(6)}…${apiKey.takeLast(4)})", color = Faint, fontSize = 11.sp)
+        }
+        Spacer(Modifier.height(8.dp))
 
         AddressField("From", origin, "Blank = your phone's current location") { origin = it }
         Spacer(Modifier.height(8.dp))
