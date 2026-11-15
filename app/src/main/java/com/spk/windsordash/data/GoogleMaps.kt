@@ -30,9 +30,11 @@ class MapsException(message: String) : Exception(message)
 
 /**
  * Minimal client for the Google Maps Platform APIs the route planner needs: Geocoding, Directions
- * (legacy), Elevation, and Places Nearby Search (legacy). Plain HttpURLConnection + org.json —
- * no new Gradle dependency. All calls are suspend/IO; each throws [MapsException] with a message
- * fit to show the user directly (bad key, zero results, no network).
+ * and Elevation (legacy, key-as-query-param APIs), and Places Nearby Search on the newer
+ * Places API (New) — many projects created after March 2025 can't enable the old Places endpoint
+ * at all, so this talks to the one Google actually points you at. Plain HttpURLConnection +
+ * org.json — no new Gradle dependency. All calls are suspend/IO; each throws [MapsException] with
+ * a message fit to show the user directly (bad key, missing API, zero results, no network).
  */
 object GoogleMaps {
     private const val BASE = "https://maps.googleapis.com/maps/api"
@@ -55,6 +57,42 @@ object GoogleMaps {
             conn.disconnect()
         }
     }
+
+    /** POST with a JSON body, for the newer, header-authenticated Places API (New). */
+    private suspend fun post(url: String, body: JSONObject, headers: Map<String, String>): JSONObject =
+        withContext(Dispatchers.IO) {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 15_000
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+            try {
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader()?.readText() ?: "{}"
+                val j = if (text.isBlank()) JSONObject() else JSONObject(text)
+                val err = j.optJSONObject("error")
+                if (err != null) {
+                    val status = err.optString("status", "ERROR")
+                    val msg = err.optString("message", "")
+                    throw MapsException(
+                        if (status == "PERMISSION_DENIED" || code == 403)
+                            "Google rejected the Places (New) request — enable \"Places API (New)\" for this key in Cloud Console.${if (msg.isNotEmpty()) " ($msg)" else ""}"
+                        else "Google Places error: $status${if (msg.isNotEmpty()) " ($msg)" else ""}"
+                    )
+                }
+                if (code !in 200..299) throw MapsException("Network error ($code) talking to Google Places.")
+                j
+            } catch (e: MapsException) {
+                throw e
+            } catch (e: Exception) {
+                throw MapsException("Couldn't reach Google Places: ${e.message ?: e::class.simpleName}")
+            } finally {
+                conn.disconnect()
+            }
+        }
 
     private fun checkStatus(j: JSONObject) {
         val status = j.optString("status", "UNKNOWN_ERROR")
@@ -148,29 +186,46 @@ object GoogleMaps {
         val byId = LinkedHashMap<String, ChargerPoi>()
         for (target in samples.distinct()) {
             val near = points.minByOrNull { kotlin.math.abs(it.distanceM - target) } ?: continue
-            val j = get(
-                "$BASE/place/nearbysearch/json?location=${near.latLng.lat},${near.latLng.lng}" +
-                    "&radius=$radiusM&type=electric_vehicle_charging_station&key=$apiKey"
+            val body = JSONObject().apply {
+                put("includedTypes", org.json.JSONArray(listOf("electric_vehicle_charging_station")))
+                put("maxResultCount", 20)
+                put(
+                    "locationRestriction",
+                    JSONObject().put(
+                        "circle",
+                        JSONObject()
+                            .put("center", JSONObject().put("latitude", near.latLng.lat).put("longitude", near.latLng.lng))
+                            .put("radius", radiusM.coerceAtMost(50_000).toDouble()),
+                    ),
+                )
+            }
+            val j = post(
+                "https://places.googleapis.com/v1/places:searchNearby",
+                body,
+                mapOf(
+                    "Content-Type" to "application/json",
+                    "X-Goog-Api-Key" to apiKey,
+                    "X-Goog-FieldMask" to "places.id,places.displayName,places.location,places.formattedAddress,places.rating,places.currentOpeningHours.openNow",
+                ),
             )
-            checkStatus(j)
-            val results = j.optJSONArray("results") ?: continue
+            val results = j.optJSONArray("places") ?: continue
             for (i in 0 until results.length()) {
                 val r = results.getJSONObject(i)
-                val id = r.optString("place_id")
+                val id = r.optString("id")
                 if (id.isEmpty() || byId.containsKey(id)) continue
-                val loc = r.getJSONObject("geometry").getJSONObject("location")
-                val at = LatLng(loc.getDouble("lat"), loc.getDouble("lng"))
+                val loc = r.optJSONObject("location") ?: continue
+                val at = LatLng(loc.getDouble("latitude"), loc.getDouble("longitude"))
                 val along = points.minByOrNull { haversineM(it.latLng, at) }?.distanceM ?: near.distanceM
                 val onRoutePoint = points.minByOrNull { kotlin.math.abs(it.distanceM - along) }?.latLng ?: near.latLng
                 byId[id] = ChargerPoi(
                     placeId = id,
-                    name = r.optString("name", "Charger"),
+                    name = r.optJSONObject("displayName")?.optString("text") ?: "Charger",
                     at = at,
-                    address = r.optString("vicinity", null),
+                    address = r.optString("formattedAddress", null),
                     alongRouteM = along,
                     detourM = haversineM(onRoutePoint, at),
                     rating = r.optDouble("rating", Double.NaN).takeIf { !it.isNaN() },
-                    openNow = r.optJSONObject("opening_hours")?.optBoolean("open_now"),
+                    openNow = r.optJSONObject("currentOpeningHours")?.optBoolean("openNow"),
                 )
             }
         }
