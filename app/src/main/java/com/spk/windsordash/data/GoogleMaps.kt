@@ -119,34 +119,45 @@ object GoogleMaps {
         return LatLng(loc.getDouble("lat"), loc.getDouble("lng"))
     }
 
-    /** Route distance/duration plus a decoded, distance-stamped point list (one per leg step) for the energy model. */
+    /**
+     * Route distance/duration plus a distance-stamped point list (one per leg step) for the energy
+     * model. Uses the Routes API (v2) — like Places, the old Directions endpoint is legacy and
+     * many newer projects can't enable it at all, so this calls what Google now points you at.
+     */
     suspend fun directions(origin: LatLng, destination: LatLng, apiKey: String): RouteSummary {
-        val j = get(
-            "$BASE/directions/json?origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}" +
-                "&key=$apiKey"
+        val body = JSONObject()
+            .put("origin", JSONObject().put("location", JSONObject().put("latLng", JSONObject().put("latitude", origin.lat).put("longitude", origin.lng))))
+            .put("destination", JSONObject().put("location", JSONObject().put("latLng", JSONObject().put("latitude", destination.lat).put("longitude", destination.lng))))
+            .put("travelMode", "DRIVE")
+            .put("routingPreference", "TRAFFIC_UNAWARE")
+        val j = post(
+            "https://routes.googleapis.com/directions/v2:computeRoutes",
+            body,
+            mapOf(
+                "Content-Type" to "application/json",
+                "X-Goog-Api-Key" to apiKey,
+                "X-Goog-FieldMask" to "routes.distanceMeters,routes.duration,routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.endLocation",
+            ),
         )
-        checkStatus(j)
         val routes = j.optJSONArray("routes")
         if (routes == null || routes.length() == 0) throw MapsException("Google Maps found no route between those points.")
-        val legs = routes.getJSONObject(0).getJSONArray("legs")
+        val route = routes.getJSONObject(0)
+        val distM = route.optDouble("distanceMeters", 0.0)
+        val durationS = route.optString("duration", "0s").removeSuffix("s").toDoubleOrNull() ?: 0.0
         val points = ArrayList<RoutePoint>()
         var dist = 0.0
-        var durationS = 0.0
-        var distM = 0.0
         points += RoutePoint(0.0, origin, 0.0, 0.0)
+        val legs = route.optJSONArray("legs") ?: org.json.JSONArray()
         for (li in 0 until legs.length()) {
-            val leg = legs.getJSONObject(li)
-            distM += leg.getJSONObject("distance").getDouble("value")
-            durationS += leg.getJSONObject("duration").getDouble("value")
-            val steps = leg.getJSONArray("steps")
+            val steps = legs.getJSONObject(li).optJSONArray("steps") ?: continue
             for (si in 0 until steps.length()) {
                 val step = steps.getJSONObject(si)
-                val stepDistM = step.getJSONObject("distance").getDouble("value")
-                val stepDurS = step.getJSONObject("duration").getDouble("value").coerceAtLeast(1.0)
+                val stepDistM = step.optDouble("distanceMeters", 0.0)
+                val stepDurS = (step.optString("staticDuration", "1s").removeSuffix("s").toDoubleOrNull() ?: 1.0).coerceAtLeast(1.0)
                 val speedKmh = (stepDistM / 1000.0) / (stepDurS / 3600.0)
-                val end = step.getJSONObject("end_location")
+                val end = step.optJSONObject("endLocation")?.optJSONObject("latLng")
                 dist += stepDistM
-                points += RoutePoint(dist, LatLng(end.getDouble("lat"), end.getDouble("lng")), 0.0, speedKmh)
+                if (end != null) points += RoutePoint(dist, LatLng(end.getDouble("latitude"), end.getDouble("longitude")), 0.0, speedKmh)
             }
         }
         return RouteSummary(distM, durationS / 60.0, points)
