@@ -196,6 +196,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Dash.init(this)
+        // Reconnect happens here (the app being opened) or from Android Auto connecting — never
+        // just because the adapter came back into Bluetooth range; see PresenceService.
+        if (Dash.state.value.status == LinkStatus.IDLE && Dash.savedAdapter != null) {
+            withPermissions { LinkService.start(this) }
+        }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Teal, background = Bg, surface = Card)) {
                 val st by Dash.state.collectAsStateWithLifecycle()

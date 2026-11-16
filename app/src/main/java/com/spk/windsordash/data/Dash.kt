@@ -143,6 +143,7 @@ object Dash {
     val state: StateFlow<DashState> = _state.asStateFlow()
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var appCtx: Context
     private var lastAt = 0L
     private var negSince = 0L
     private var posSince = 0L
@@ -156,6 +157,14 @@ object Dash {
     private var pendingCloseRun: Run? = null
     private var pendingCloseAt = 0L
     private val RECONNECT_BRIDGE_MS = 2 * 60_000L
+
+    // Auto-disconnect when the car looks off. The DC-DC converter holds the 12V battery around
+    // 13-14.5V while the car is on; once it shuts off, the battery settles to its resting
+    // ~12.0-12.8V. A powered dongle left connected otherwise keeps ACC up (and the link open) for
+    // hours — close the link ourselves once the voltage has clearly settled low.
+    private var sawHighV = false
+    private var lowVSince = 0L
+    private val AUTO_DISCONNECT_CONFIRM_MS = 10_000L
     // Guard for a saved car-odometer location: it must keep pace with GPS distance.
     private var gpsTotalKm = 0.0
     private var carRefVal: Int? = null
@@ -174,6 +183,7 @@ object Dash {
 
     fun init(ctx: Context) {
         if (::prefs.isInitialized) return
+        appCtx = ctx.applicationContext
         prefs = ctx.applicationContext.getSharedPreferences("dash", Context.MODE_PRIVATE)
         LocalLog.init(ctx.applicationContext)
         com.spk.windsordash.obd.OdoFinder.init(ctx.applicationContext)
@@ -542,6 +552,21 @@ object Dash {
             // A charge cut off mid-way is handled by the gap fill instead — don't count it twice.
             if (!offlineChecked) { if (paused == null) checkWhileAway(s) else offlineChecked = true }
             if (s.at - lastSeenSaved > 60_000) saveLastSeen(s)
+            s.aux12V?.let { v ->
+                when {
+                    v >= 13.0 -> { sawHighV = true; lowVSince = 0L }
+                    sawHighV && !_state.value.charging && v <= 12.8 -> {
+                        if (lowVSince == 0L) lowVSince = s.at
+                        else if (s.at - lowVSince >= AUTO_DISCONNECT_CONFIRM_MS) {
+                            LocalLog.event("auto-disconnect: 12V settled at %.2fV — car looks off".format(v))
+                            sawHighV = false; lowVSince = 0L
+                            com.spk.windsordash.service.LinkService.stop(appCtx)
+                            return
+                        }
+                    }
+                    else -> lowVSince = 0L
+                }
+            }
         }
         if (paused != null && _state.value.status != LinkStatus.DEMO) {
             val k = if (s.packV != null && s.currentA != null) s.packV * s.currentA / 1000 else null
@@ -751,6 +776,8 @@ object Dash {
     }
 
     fun onDisconnected() {
+        sawHighV = false
+        lowVSince = 0L
         // Don't close the run yet — a dropped Bluetooth link (adapter waking up, a bump, a brief
         // RFCOMM hiccup) shouldn't split one drive into two log entries. Hold it; onSample bridges
         // it back in if the link returns within RECONNECT_BRIDGE_MS, or finalizes it (lazily, on
