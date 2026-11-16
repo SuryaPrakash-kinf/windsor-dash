@@ -111,6 +111,8 @@ data class DashState(
     val run: Run? = null,             // drive in progress
     /** kWh the battery lost while the app wasn't connected (likely a drive without the dongle). */
     val offlineDriveKwh: Double? = null,
+    /** Set from the Plan screen: alert once actual driving runs meaningfully above this Wh/km. */
+    val planWatchWhKm: Double? = null,
 ) {
     val hasData get() = sample.at > 0 && (status == LinkStatus.LIVE || status == LinkStatus.DEMO)
     /** Energy left ÷ SoC, only at ≥ 80 % SoC where the 1 % rounding matters least. Calculated, not a BMS value. */
@@ -174,6 +176,9 @@ object Dash {
     private var offlineChecked = false
     private var lastSeenSaved = 0L
     private var targetAlerted = false
+    private var planWatchAlerted = false
+    private var usualAlertTripStart = 0L
+    private var usualAlerted = false
     private val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
     private var lastOdo: Int? = null
     private var whSinceOdo = 0.0
@@ -193,6 +198,7 @@ object Dash {
                 adapter = AdapterRef.decode(prefs.getString("adapter", null)),
                 targetSoc = prefs.getInt("target", 100),
                 odoSpec = OdoSpec.decodeSpec(prefs.getString("odo_spec", null)),
+                planWatchWhKm = prefs.getFloat("plan_watch", -1f).takeIf { it > 0 }?.toDouble(),
             )
         }
         // 0.10.1: the Windsor's odometer is known (CAN 0x120). Use it in place of any earlier
@@ -453,6 +459,21 @@ object Dash {
         _state.update { it.copy(targetSoc = pct) }
     }
 
+    /**
+     * Your own Google Maps Platform API key (Directions, Elevation, Places, Geocoding enabled),
+     * used only by the route-based charge planner. Stored locally; never sent anywhere but Google.
+     */
+    var mapsApiKey: String
+        get() = prefs.getString("maps_key", "") ?: ""
+        set(v) { prefs.edit().putString("maps_key", v).apply() }
+
+    /** Arm (or clear, with null) an alert for running meaningfully above [whKm] from the Plan screen. */
+    fun setPlanWatch(whKm: Double?) {
+        prefs.edit().putFloat("plan_watch", (whKm ?: -1.0).toFloat()).apply()
+        planWatchAlerted = false
+        _state.update { it.copy(planWatchWhKm = whKm) }
+    }
+
     fun setStatus(s: LinkStatus, text: String) {
         val before = _state.value.status
         _state.update { it.copy(status = s, statusText = text) }
@@ -694,6 +715,16 @@ object Dash {
             ?: s.socPct?.let { it / 100 * WindsorProfile.RATED_KWH * ((s.sohPct ?: 100.0) / 100) }
         val range = energy?.let { (it * 1000 / eff).toInt() }
 
+        // Plan watch: armed from the Plan screen. Fires once, only off live driving (not a stale
+        // or default figure), so an early, noisy reading right after moving off can't trigger it.
+        val watch = prev.planWatchWhKm
+        if (watch != null && !planWatchAlerted && win != null && win.second >= 3.0 &&
+            now - win.third < 60_000 && win.first > watch * 1.1
+        ) {
+            planWatchAlerted = true
+            Alerts.aboveRunningAvg(win.first, watch)
+        }
+
         _state.value = prev.copy(
             sample = s, powerKw = kw, charging = charging, trip = trip, charge = charge,
             rangeKm = range, effWhKm = eff, effSource = src, parked = parked,
@@ -772,6 +803,19 @@ object Dash {
                 if (soc != null && soc >= prev.targetSoc && !targetAlerted) { targetAlerted = true; Alerts.targetReached(soc, prev.targetSoc) }
             } else if (!charging) targetAlerted = false
             if (chargeDiscarded) LocalLog.event("ignored a very short inflow (regen, not a charge)")
+
+            // Battery care: periodic LFP tips (weekly full charge, don't sit low, don't sit full for days).
+            BatteryCare.record(prefs, s.socPct, charging, now)
+            BatteryCare.maybeNotify(prefs, BatteryCare.tip(prefs, s.socPct, now), now)
+
+            // Usual-efficiency watch: once per trip, flag driving running well above your recent-runs average.
+            if (trip.startedAt != usualAlertTripStart) { usualAlertTripStart = trip.startedAt; usualAlerted = false }
+            if (!usualAlerted && recent != null && win != null && win.second >= 3.0 &&
+                now - win.third < 60_000 && win.first > recent.first * 1.25
+            ) {
+                usualAlerted = true
+                Alerts.aboveUsual(win.first, recent.first)
+            }
         }
     }
 
