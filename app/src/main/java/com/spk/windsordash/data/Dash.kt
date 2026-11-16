@@ -153,6 +153,9 @@ object Dash {
     private var lastFixAt = 0L
     private var lastFixSpeed: Float? = null
     private var idleSince = 0L
+    private var pendingCloseRun: Run? = null
+    private var pendingCloseAt = 0L
+    private val RECONNECT_BRIDGE_MS = 2 * 60_000L
     // Guard for a saved car-odometer location: it must keep pace with GPS distance.
     private var gpsTotalKm = 0.0
     private var carRefVal: Int? = null
@@ -527,6 +530,14 @@ object Dash {
 
     @Synchronized
     fun onSample(s: Sample) {
+        pendingCloseRun?.let { held ->
+            pendingCloseRun = null
+            if (s.at - pendingCloseAt <= RECONNECT_BRIDGE_MS && _state.value.run == null) {
+                _state.update { it.copy(run = held) }
+            } else {
+                finishRun(held)
+            }
+        }
         if (_state.value.status == LinkStatus.LIVE) {
             // A charge cut off mid-way is handled by the gap fill instead — don't count it twice.
             if (!offlineChecked) { if (paused == null) checkWhileAway(s) else offlineChecked = true }
@@ -740,7 +751,16 @@ object Dash {
     }
 
     fun onDisconnected() {
-        finishRun(_state.value.run)
+        // Don't close the run yet — a dropped Bluetooth link (adapter waking up, a bump, a brief
+        // RFCOMM hiccup) shouldn't split one drive into two log entries. Hold it; onSample bridges
+        // it back in if the link returns within RECONNECT_BRIDGE_MS, or finalizes it (lazily, on
+        // whatever sample arrives next) if it doesn't.
+        val r = _state.value.run
+        if (r != null) {
+            pendingCloseRun = r
+            pendingCloseAt = System.currentTimeMillis()
+            _state.update { it.copy(run = null) }
+        }
         connectedAt = 0L
         if (_state.value.status == LinkStatus.LIVE) saveLastSeen(_state.value.sample)
         offlineChecked = false
