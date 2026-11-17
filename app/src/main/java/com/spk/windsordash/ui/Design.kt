@@ -1,7 +1,13 @@
 package com.spk.windsordash.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -249,6 +255,47 @@ internal fun SocRing(soc: Double?, charging: Boolean, size: Dp = 176.dp) {
             Label(if (charging) "⚡ charging" else "charge", color = if (charging) Green else Dim)
         }
     }
+}
+
+/**
+ * Ambient state glow: a soft light meant to sit behind [SocRing]. It answers what the car is
+ * doing right now rather than decorating the screen — teal while parked and quiet, a slow
+ * cyan breathing glow while charging, and amber that brightens with how hard the car is
+ * drawing power while driving. Colors and intensity cross-fade on change; see [ambientMood].
+ */
+@Composable
+internal fun AmbientGlow(mood: AmbientMood, modifier: Modifier = Modifier) {
+    val animColor by animateColorAsState(mood.color, tween(900), label = "glowColor")
+    val breathe = if (mood.pulse) {
+        val inf = rememberInfiniteTransition(label = "glowPulse")
+        inf.animateFloat(0.72f, 1f, infiniteRepeatable(tween(1700, easing = LinearEasing), RepeatMode.Reverse), label = "breathe").value
+    } else 1f
+    val animStrength by animateFloatAsState(mood.strength, tween(900), label = "glowStrength")
+    Canvas(modifier) {
+        val r = size.minDimension / 2
+        if (r <= 0f) return@Canvas
+        val a = (animStrength * breathe).coerceIn(0f, 1f)
+        val center = Offset(size.width / 2, size.height / 2)
+        drawCircle(
+            brush = Brush.radialGradient(
+                0f to animColor.copy(alpha = 0.42f * a),
+                0.5f to animColor.copy(alpha = 0.20f * a),
+                1f to Color.Transparent,
+                center = center, radius = r,
+            ),
+            radius = r, center = center,
+        )
+    }
+}
+
+/** Glow color, peak intensity and whether it breathes — driven by live telemetry, not a fixed look. */
+internal data class AmbientMood(val color: Color, val strength: Float, val pulse: Boolean)
+
+internal fun ambientMood(charging: Boolean, kw: Double?, parked: Boolean): AmbientMood = when {
+    charging -> AmbientMood(Cyan, 1f, pulse = true)
+    kw != null && kw > 15.0 -> AmbientMood(Amber, (0.55f + ((kw - 15.0) / 45.0).coerceIn(0.0, 0.45)).toFloat(), pulse = false)
+    parked -> AmbientMood(Teal, 0.14f, pulse = false)
+    else -> AmbientMood(Teal, 0.22f, pulse = false)
 }
 
 /**
