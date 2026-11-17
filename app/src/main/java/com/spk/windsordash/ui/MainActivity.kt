@@ -392,9 +392,15 @@ internal fun Screen(
         // ── Battery ────────────────────────────────────────────
         Panel {
             val delta = st.cellDeltaMv
-            Heading("Battery", dot = Green) {
-                Value(s.socPct?.roundToInt()?.toString() ?: "–", "%", size = 15.sp, color = socColor(s.socPct))
+            val kw = if (st.hasData) st.powerKw else null
+            val mood = ambientMood(st.charging, kw, st.parked)
+            Heading("Battery", dot = Green)
+            Spacer(Modifier.height(4.dp))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                AmbientGlow(mood, Modifier.size(240.dp))
+                SocRing(s.socPct, st.charging, size = 148.dp)
             }
+            Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
                     Label("Energy left")
